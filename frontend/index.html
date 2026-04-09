@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>IoT Aggregation Starter UI</title>
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 760px; margin: 40px auto; padding: 0 12px; }
+    input, button { padding: 8px 10px; margin: 4px; }
+    pre { background: #f3f3f3; padding: 12px; border-radius: 6px; overflow-x: auto; }
+  </style>
+</head>
+<body>
+  <h1>IoT Aggregation</h1>
+
+  <h3>Submit Sensor Data</h3>
+  <input id="sensorId" placeholder="sensor_id" />
+  <input id="values" placeholder="values e.g. 20,21,22" />
+  <button id="sendBtn">Send</button>
+  <pre id="submitResult"></pre>
+
+  <h3>Get Summary</h3>
+  <input id="dataId" placeholder="data_id" />
+  <button id="summaryBtn">Get Summary</button>
+  <pre id="summaryResult"></pre>
+
+  <h3>List Uploads</h3>
+  <button id="listBtn">List</button>
+  <pre id="listResult"></pre>
+
+  <script src="app.js"></script>
+</body>
+</html>
