@@ -1,39 +1,60 @@
-from datetime import datetime, timezone
+import boto3
+from datetime import datetime
 
-# In-memory starter store for local development before DynamoDB is wired.
-_STORE = {}
+# Connect to DynamoDB
+dynamodb = boto3.resource('dynamodb', region_name='us-east-1')
+
+# Table name
+table = dynamodb.Table('IoT_Data')
 
 
-def create_table_if_not_exists():
-    # No-op for starter scaffold.
-    return True
-
-
+# 🔹 1. Insert Record
 def insert_record(data_id, sensor_id, object_key):
-    _STORE[data_id] = {
-        "data_id": data_id,
-        "sensor_id": sensor_id,
-        "object_key": object_key,
-        "status": "pending",
-        "summary": {},
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    }
+    table.put_item(
+        Item={
+            'data_id': data_id,
+            'sensor_id': sensor_id,
+            'object_key': object_key,
+            'status': 'pending',
+            'summary': {},
+            'timestamp': datetime.now().isoformat()
+        }
+    )
+    print("Record inserted successfully!")
 
 
+# 🔹 2. Update Status
 def update_record_status(data_id, status):
-    if data_id in _STORE:
-        _STORE[data_id]["status"] = status
+    table.update_item(
+        Key={'data_id': data_id},
+        UpdateExpression="SET #s = :s",
+        ExpressionAttributeNames={'#s': 'status'},
+        ExpressionAttributeValues={':s': status}
+    )
+    print("Status updated!")
 
 
+# 🔹 3. Update Summary
 def update_record_summary(data_id, summary):
-    if data_id in _STORE:
-        _STORE[data_id]["summary"] = summary
-        _STORE[data_id]["status"] = "done"
+    table.update_item(
+        Key={'data_id': data_id},
+        UpdateExpression="SET summary = :sum, #s = :done",
+        ExpressionAttributeNames={'#s': 'status'},
+        ExpressionAttributeValues={
+            ':sum': summary,
+            ':done': 'done'
+        }
+    )
+    print("Summary updated!")
 
 
+# 🔹 4. Get Single Record
 def get_record(data_id):
-    return _STORE.get(data_id)
+    response = table.get_item(Key={'data_id': data_id})
+    return response.get('Item', None)
 
 
+# 🔹 5. Get All Records
 def list_records():
-    return list(_STORE.values())
+    response = table.scan()
+    return response.get('Items', [])
