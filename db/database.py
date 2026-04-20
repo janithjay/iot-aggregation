@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from decimal import Decimal
 from datetime import datetime, timezone
 
 try:
@@ -21,6 +22,28 @@ _table = None
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _to_dynamo_value(value):
+    if isinstance(value, float):
+        return Decimal(str(value))
+    if isinstance(value, dict):
+        return {k: _to_dynamo_value(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_to_dynamo_value(v) for v in value]
+    return value
+
+
+def _from_dynamo_value(value):
+    if isinstance(value, Decimal):
+        if value == value.to_integral_value():
+            return int(value)
+        return float(value)
+    if isinstance(value, dict):
+        return {k: _from_dynamo_value(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_from_dynamo_value(v) for v in value]
+    return value
 
 
 def _using_in_memory() -> bool:
@@ -108,7 +131,7 @@ def update_record_summary(data_id: str, summary: dict):
         Key={"data_id": data_id},
         UpdateExpression="SET summary = :sum, #s = :done",
         ExpressionAttributeNames={"#s": "status"},
-        ExpressionAttributeValues={":sum": summary, ":done": "done"},
+        ExpressionAttributeValues={":sum": _to_dynamo_value(summary), ":done": "done"},
     )
 
 
@@ -117,7 +140,10 @@ def get_record(data_id: str):
         return _IN_MEMORY_STORE.get(data_id)
 
     response = _get_table().get_item(Key={"data_id": data_id})
-    return response.get("Item")
+    item = response.get("Item")
+    if item is None:
+        return None
+    return _from_dynamo_value(item)
 
 
 def list_records():
@@ -125,4 +151,4 @@ def list_records():
         return list(_IN_MEMORY_STORE.values())
 
     response = _get_table().scan()
-    return response.get("Items", [])
+    return [_from_dynamo_value(item) for item in response.get("Items", [])]
