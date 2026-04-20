@@ -1,6 +1,10 @@
 from flask import Flask, jsonify, request
 import json
 import uuid
+import sys
+
+# Ensure project root modules (backend/, db/, shared/) are importable in container.
+sys.path.insert(0, "/app")
 
 from backend.service import build_upload_payload
 from db.database import (
