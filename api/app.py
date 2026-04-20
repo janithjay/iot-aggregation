@@ -5,8 +5,14 @@ import sys
 sys.path.insert(0, "/app")
 
 from backend.exceptions import BackendError, RecordNotFoundError, ValidationError
-from backend.services import get_summary_by_id, ingest_sensor_payload, list_uploads as service_list_uploads
+from backend.services import (
+    get_summary_by_id,
+    ingest_sensor_payload,
+    list_uploads as service_list_uploads,
+    mark_failed,
+)
 from db.database import create_table_if_not_exists
+from shared.queue import publish_job
 
 app = Flask(__name__)
 create_table_if_not_exists()
@@ -22,10 +28,25 @@ def receive_data():
     body = request.get_json(silent=True) or {}
     try:
         record = ingest_sensor_payload(body)
+        publish_job(
+            {
+                "data_id": record["data_id"],
+                "sensor_id": record.get("sensor_id"),
+                "values": body.get("values", []),
+                "retry_count": 0,
+            }
+        )
     except ValidationError as exc:
         return jsonify({"error": str(exc)}), 400
     except BackendError as exc:
         return jsonify({"error": str(exc)}), 500
+    except Exception as exc:
+        if "record" in locals() and record.get("data_id"):
+            try:
+                mark_failed(record["data_id"])
+            except BackendError:
+                pass
+        return jsonify({"error": f"Failed to enqueue processing job: {exc}"}), 500
 
     return (
         jsonify({"data_id": record["data_id"], "status": record.get("status", "pending")}),

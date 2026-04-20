@@ -32,6 +32,9 @@ services:
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
       MINIO_ENDPOINT: http://minio:9000
       DYNAMO_ENDPOINT: http://dynamodb-local:8000
+      DYNAMO_TABLE: iot_data
+      MAX_JOB_RETRIES: "3"
+      RETRY_BACKOFF_SECONDS: "2"
     depends_on:
       - rabbitmq
       - minio
@@ -46,6 +49,9 @@ services:
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
       MINIO_ENDPOINT: http://minio:9000
       DYNAMO_ENDPOINT: http://dynamodb-local:8000
+      DYNAMO_TABLE: iot_data
+      MAX_JOB_RETRIES: "3"
+      RETRY_BACKOFF_SECONDS: "2"
     depends_on:
       - rabbitmq
       - minio

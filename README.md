@@ -28,3 +28,26 @@ This repository is scaffolded for a 5-member team with separated roles:
 ## Notes
 
 This is a starter scaffold. Replace stubs with full implementations as each role progresses.
+
+## Worker/Processor Scope (Implemented)
+
+- Worker consumes jobs from RabbitMQ queue `iot-jobs`.
+- Worker transitions DB status: `pending -> processing -> done|failed`.
+- Worker computes summaries from sensor values and writes them to DB.
+- Worker retries failed jobs up to `MAX_JOB_RETRIES` before marking failed.
+
+## Lead/Integrator Scope (Implemented)
+
+- Integrated API ingestion with queue publishing for background processing.
+- Added worker-focused unit tests in `tests/test_worker.py`.
+- Added integration smoke script in `scripts/integration_smoke.ps1`.
+- Standardized shared env defaults and compose wiring for queue + DB integration.
+
+## Integration Validation Flow
+
+1. Start stack:
+   - `docker compose up --build -d`
+2. Run integration smoke:
+   - `powershell -ExecutionPolicy Bypass -File scripts/integration_smoke.ps1`
+3. Optional: run tests
+   - `pytest -q`
