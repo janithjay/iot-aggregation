@@ -3,30 +3,280 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>IoT Aggregation Starter UI</title>
-  <style>
-    body { font-family: Arial, sans-serif; max-width: 760px; margin: 40px auto; padding: 0 12px; }
-    input, button { padding: 8px 10px; margin: 4px; }
-    pre { background: #f3f3f3; padding: 12px; border-radius: 6px; overflow-x: auto; }
-  </style>
+  <title>IoT Data Aggregation Hub</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
 <body>
-  <h1>IoT Aggregation</h1>
+  <!-- Navigation Header -->
+  <header class="navbar">
+    <div class="navbar-container">
+      <div class="navbar-brand">
+        <svg class="logo-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="1"></circle>
+          <path d="M12 1v6M12 17v6M4.22 4.22l4.24 4.24M15.54 15.54l4.24 4.24M1 12h6M17 12h6M4.22 19.78l4.24-4.24M15.54 8.46l4.24-4.24"></path>
+        </svg>
+        <h1>IoT Hub</h1>
+      </div>
+      <nav class="navbar-nav">
+        <button class="nav-link active" data-section="dashboard">Dashboard</button>
+        <button class="nav-link" data-section="submit">Submit Data</button>
+        <button class="nav-link" data-section="analytics">Analytics</button>
+        <button class="nav-link" data-section="history">History</button>
+      </nav>
+      <div class="navbar-controls">
+        <button class="btn-refresh" id="refreshBtn" title="Refresh data">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"></path>
+            <path d="M21 3v5h-5"></path>
+            <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"></path>
+            <path d="M3 21v-5h5"></path>
+          </svg>
+        </button>
+        <label class="toggle-auto-refresh">
+          <input type="checkbox" id="autoRefreshToggle" checked>
+          <span>Auto</span>
+        </label>
+      </div>
+    </div>
+  </header>
 
-  <h3>Submit Sensor Data</h3>
-  <input id="sensorId" placeholder="sensor_id" />
-  <input id="values" placeholder="values e.g. 20,21,22" />
-  <button id="sendBtn">Send</button>
-  <pre id="submitResult"></pre>
+  <!-- Main Content -->
+  <main class="main-content">
+    <!-- Dashboard Section -->
+    <section id="dashboard-section" class="section active">
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-header">
+            <h3>Total Submissions</h3>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"></circle>
+              <path d="M12 6v6l4 2"></path>
+            </svg>
+          </div>
+          <div class="stat-value" id="totalSubmissions">0</div>
+          <div class="stat-change">Last 24 hours</div>
+        </div>
 
-  <h3>Get Summary</h3>
-  <input id="dataId" placeholder="data_id" />
-  <button id="summaryBtn">Get Summary</button>
-  <pre id="summaryResult"></pre>
+        <div class="stat-card">
+          <div class="stat-header">
+            <h3>Processing</h3>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"></circle>
+              <path d="M12 6v6h6"></path>
+            </svg>
+          </div>
+          <div class="stat-value" id="processingCount">0</div>
+          <div class="stat-change">In queue</div>
+        </div>
 
-  <h3>List Uploads</h3>
-  <button id="listBtn">List</button>
-  <pre id="listResult"></pre>
+        <div class="stat-card">
+          <div class="stat-header">
+            <h3>Completed</h3>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="20 6 9 17 4 12"></polyline>
+            </svg>
+          </div>
+          <div class="stat-value" id="completedCount">0</div>
+          <div class="stat-change">Success rate</div>
+        </div>
+
+        <div class="stat-card">
+          <div class="stat-header">
+            <h3>Failed</h3>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"></circle>
+              <line x1="15" y1="9" x2="9" y2="15"></line>
+              <line x1="9" y1="9" x2="15" y2="15"></line>
+            </svg>
+          </div>
+          <div class="stat-value" id="failedCount">0</div>
+          <div class="stat-change">Errors</div>
+        </div>
+      </div>
+
+      <!-- Live Data Overview -->
+      <div class="dashboard-grid">
+        <div class="chart-container">
+          <h3>Status Distribution</h3>
+          <canvas id="statusChart"></canvas>
+        </div>
+
+        <div class="chart-container">
+          <h3>Submissions Timeline</h3>
+          <canvas id="submissionsChart"></canvas>
+        </div>
+      </div>
+
+      <!-- Recent Activity -->
+      <div class="recent-activity">
+        <h3>Recent Activity</h3>
+        <div class="activity-list" id="activityList">
+          <div class="empty-state">No data available. Submit sensor data to get started.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Submit Data Section -->
+    <section id="submit-section" class="section">
+      <div class="submit-container">
+        <div class="submit-card">
+          <h2>Submit Sensor Data</h2>
+          <p class="section-subtitle">Send IoT sensor readings for processing</p>
+
+          <form id="dataForm" class="form-grid">
+            <div class="form-group">
+              <label for="sensorId">Sensor ID *</label>
+              <input
+                type="text"
+                id="sensorId"
+                placeholder="e.g., SENSOR-01, TEMP-ZONE-A"
+                required
+                class="form-input"
+              />
+              <small>Unique identifier for your sensor</small>
+            </div>
+
+            <div class="form-group">
+              <label for="dataType">Data Type</label>
+              <select id="dataType" class="form-input">
+                <option value="manual">Manual Entry</option>
+                <option value="file">File Upload</option>
+              </select>
+            </div>
+
+            <div id="manualInput" class="form-full">
+              <div class="form-group">
+                <label for="values">Sensor Values *</label>
+                <textarea
+                  id="values"
+                  placeholder="Enter comma-separated values (e.g., 20.5, 21.3, 22.1)"
+                  class="form-input form-textarea"
+                  required
+                ></textarea>
+                <small>Enter temperature/humidity readings separated by commas</small>
+              </div>
+            </div>
+
+            <div id="fileInput" class="form-full" style="display: none;">
+              <div class="form-group">
+                <label for="csvFile">Upload CSV/JSON File</label>
+                <div class="file-upload">
+                  <input
+                    type="file"
+                    id="csvFile"
+                    accept=".csv,.json"
+                    class="file-input"
+                  />
+                  <div class="file-upload-label">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                      <polyline points="17 8 12 3 7 8"></polyline>
+                      <line x1="12" y1="3" x2="12" y2="15"></line>
+                    </svg>
+                    <span>Drop file here or click to browse</span>
+                  </div>
+                </div>
+                <small>Supported formats: CSV, JSON</small>
+              </div>
+            </div>
+
+            <div class="form-actions">
+              <button type="submit" class="btn btn-primary btn-lg">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="12 5 12 19"></polyline>
+                  <polyline points="19 12 12 19 5 12"></polyline>
+                </svg>
+                Submit Data
+              </button>
+              <button type="reset" class="btn btn-secondary btn-lg">Clear</button>
+            </div>
+          </form>
+
+          <!-- Submission Result -->
+          <div id="submitResult" class="result-container"></div>
+        </div>
+
+        <!-- Data Preview -->
+        <div class="preview-card">
+          <h3>Data Preview</h3>
+          <div id="previewData" class="preview-content">
+            <div class="empty-state">Enter values to see preview</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Analytics Section -->
+    <section id="analytics-section" class="section">
+      <div class="analytics-header">
+        <h2>Analytics & Summaries</h2>
+        <div class="analytics-controls">
+          <input
+            type="text"
+            id="summarySearchId"
+            placeholder="Search by Data ID..."
+            class="form-input"
+          />
+          <button id="searchSummaryBtn" class="btn btn-primary">Search</button>
+        </div>
+      </div>
+
+      <div id="summaryResult" class="summaries-grid"></div>
+    </section>
+
+    <!-- History Section -->
+    <section id="history-section" class="section">
+      <div class="history-header">
+        <h2>Submission History</h2>
+        <div class="history-controls">
+          <select id="statusFilter" class="form-input filter-select">
+            <option value="">All Status</option>
+            <option value="pending">Pending</option>
+            <option value="processing">Processing</option>
+            <option value="done">Completed</option>
+            <option value="failed">Failed</option>
+          </select>
+          <button class="btn btn-primary" id="exportBtn">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+              <polyline points="7 10 12 15 17 10"></polyline>
+              <line x1="12" y1="15" x2="12" y2="3"></line>
+            </svg>
+            Export
+          </button>
+        </div>
+      </div>
+
+      <div class="table-container">
+        <table class="data-table" id="historyTable">
+          <thead>
+            <tr>
+              <th>Data ID</th>
+              <th>Sensor ID</th>
+              <th>Status</th>
+              <th>Submitted</th>
+              <th>Summary</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="historyTableBody">
+            <tr class="loading-row">
+              <td colspan="6">Loading data...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <!-- Loading Spinner -->
+  <div id="loadingSpinner" class="loading-spinner">
+    <div class="spinner"></div>
+  </div>
+
+  <!-- Toast Notifications -->
+  <div id="toastContainer" class="toast-container"></div>
 
   <script src="app.js"></script>
 </body>

@@ -1,53 +1,110 @@
-# IoT Aggregation Starter
+# IoT Data Aggregation Platform
 
-This repository is scaffolded for a 5-member team with separated roles:
+IoT sensor data aggregation system with async processing, local-first infrastructure, and a 5-role team split.
 
-1. Lead/Integrator + Worker/Processor Developer
-2. Backend Developer
-3. API Developer
-4. Database Administrator
-5. Frontend/DevOps
+## Overview
 
-## Structure
+This project runs as a Docker Compose stack with:
 
-- api/: REST endpoints
-- backend/: business logic layer
-- db/: schema and database access layer
-- worker/: queue consumer and processing
-- frontend/: simple browser UI
-- shared/: shared project configuration
-- tests/: baseline test files
+- Flask API for ingestion and retrieval
+- RabbitMQ queue for async jobs
+- Worker service for summary processing
+- DynamoDB Local for persistence
+- MinIO for object-storage compatibility
+- Nginx-hosted frontend dashboard
 
-## Quick Start (local)
+## Project Structure
 
-1. Build and run with Docker Compose:
-   - docker compose up --build
-2. Open API health endpoint:
-   - http://localhost:5000/health
+```
+api/            Flask API endpoints
+backend/        Business logic, models, validation
+db/             DynamoDB table access and helpers
+worker/         Queue consumer and job processing
+frontend/       Static UI served by nginx
+shared/         Shared config and queue helpers
+tests/          Unit tests
+scripts/        Smoke and verification scripts
+docker-compose.yml
+```
+
+## Quick Start
+
+```powershell
+docker compose up --build -d
+docker compose ps
+```
+
+Service URLs:
+
+- Frontend: http://localhost:8080
+- API: http://localhost:5000
+- RabbitMQ UI: http://localhost:15672
+- MinIO Console: http://localhost:9001
+- DynamoDB Local: http://localhost:8000
+
+## API Endpoints
+
+- `GET /health`
+- `POST /data`
+- `GET /summary?id=<data_id>`
+- `GET /list`
+
+Example `POST /data` body:
+
+```json
+{
+  "sensor_id": "SENSOR-01",
+  "values": [20.5, 21.0, 22.3]
+}
+```
+
+## Data Flow
+
+1. API validates and stores a new record as `pending`.
+2. API publishes a job to RabbitMQ.
+3. Worker consumes the job, computes summary, updates record.
+4. Status transitions: `pending -> processing -> done` (or `failed` after retries).
+
+## Testing and Verification
+
+Run tests:
+
+```powershell
+$env:USE_LOCAL='true'
+$env:DYNAMO_ENDPOINT='http://localhost:8000'
+.venv/Scripts/python.exe -m pytest -q
+```
+
+Run integration smoke:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/integration_smoke.ps1
+```
+
+Run all checks (stack + tests + smoke + DB scan):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/verify_all.ps1
+```
+
+## Team Roles
+
+- Member 1: Lead/Integrator + Worker
+- Member 2: Backend
+- Member 3: API
+- Member 4: Database
+- Member 5: Frontend/DevOps
 
 ## Notes
 
-This is a starter scaffold. Replace stubs with full implementations as each role progresses.
+- Current setup is local-first and does not require AWS accounts.
+- DynamoDB is emulated with DynamoDB Local.
+- Object storage uses MinIO local defaults.
+- Frontend uses nginx `/api` proxy to reach the API container.
 
-## Worker/Processor Scope (Implemented)
+## Related Docs
 
-- Worker consumes jobs from RabbitMQ queue `iot-jobs`.
-- Worker transitions DB status: `pending -> processing -> done|failed`.
-- Worker computes summaries from sensor values and writes them to DB.
-- Worker retries failed jobs up to `MAX_JOB_RETRIES` before marking failed.
-
-## Lead/Integrator Scope (Implemented)
-
-- Integrated API ingestion with queue publishing for background processing.
-- Added worker-focused unit tests in `tests/test_worker.py`.
-- Added integration smoke script in `scripts/integration_smoke.ps1`.
-- Standardized shared env defaults and compose wiring for queue + DB integration.
-
-## Integration Validation Flow
-
-1. Start stack:
-   - `docker compose up --build -d`
-2. Run integration smoke:
-   - `powershell -ExecutionPolicy Bypass -File scripts/integration_smoke.ps1`
-3. Optional: run tests
-   - `pytest -q`
+- `frontend/README.md`
+- `db/schema.md`
+- `scripts/integration_smoke.ps1`
+- `scripts/verify_all.ps1`
