@@ -107,23 +107,25 @@ def receive_data():
     body = request.get_json(silent=True) or {}
     
     # Log the request
-    logger.info(f"Received POST /data with sensor_id={body.get('sensor_id')}")
+    logger.info(f"Received POST /data with sensor_id={body.get('sensor_id')}, node_id={body.get('node_id')}")
     
     record = None
     try:
         # Step 1: Ingest and validate payload
         record = _with_db_recovery("ingest_sensor_payload", lambda: ingest_sensor_payload(body))
-        logger.info(f"Record created with data_id={record['data_id']}")
+        logger.info(f"Record created with data_id={record['data_id']}, node_id={record.get('node_id')}")
         
-        # Step 2: Publish job to queue
+        # Step 2: Publish job to queue with object_key for worker to fetch raw data
         job_payload = {
             "data_id": record["data_id"],
             "sensor_id": record.get("sensor_id"),
-            "values": body.get("values", []),
+            "node_id": record.get("node_id"),
+            "object_key": record.get("object_key"),
+            "metrics": record.get("metrics", {}),
             "retry_count": 0,
         }
         publish_job(job_payload)
-        logger.info(f"Job published for data_id={record['data_id']}")
+        logger.info(f"Job published for data_id={record['data_id']} with object_key={record.get('object_key')}")
         
     except ValidationError as exc:
         # Validation failed on request
