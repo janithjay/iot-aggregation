@@ -18,10 +18,11 @@ except ImportError:
         pass
 
 from backend.exceptions import BackendError, RecordNotFoundError, ValidationError
-from backend.services import compute_summary, mark_completed, mark_failed, mark_processing
+from backend.services import compute_summary, compute_metrics_summary, mark_completed, mark_failed, mark_processing
 from db.database import create_table_if_not_exists
 from shared.config import MAX_JOB_RETRIES, QUEUE_NAME, RABBITMQ_URL, RETRY_BACKOFF_SECONDS
 from shared.queue import publish_job
+from shared.storage import fetch_raw_payload
 
 
 logger = logging.getLogger("worker")
@@ -35,12 +36,26 @@ def parse_job_message(body: bytes) -> dict:
         raise ValidationError(f"Invalid job payload format: {exc}") from exc
 
     data_id = payload.get("data_id")
-    values = payload.get("values")
 
     if not isinstance(data_id, str) or not data_id.strip():
         raise ValidationError("Job payload missing valid data_id")
+    
+    # Node-based metrics processing: object_key and node_id are present
+    if "object_key" in payload and "node_id" in payload:
+        return {
+            "data_id": data_id,
+            "sensor_id": payload.get("sensor_id"),
+            "node_id": payload.get("node_id"),
+            "object_key": payload.get("object_key"),
+            "metrics": payload.get("metrics", {}),
+            "retry_count": int(payload.get("retry_count", 0)),
+            "is_metrics_job": True,
+        }
+    
+    # Legacy values-based processing
+    values = payload.get("values", [])
     if not isinstance(values, list) or len(values) == 0:
-        raise ValidationError("Job payload missing non-empty values list")
+        raise ValidationError("Job payload missing non-empty values list or object_key")
     if any(not isinstance(v, (int, float)) for v in values):
         raise ValidationError("All job values must be numeric")
 
@@ -49,15 +64,34 @@ def parse_job_message(body: bytes) -> dict:
         "sensor_id": payload.get("sensor_id"),
         "values": [float(v) for v in values],
         "retry_count": int(payload.get("retry_count", 0)),
+        "is_metrics_job": False,
     }
 
 
 def process_job(payload: dict) -> dict:
     data_id = payload["data_id"]
-    values = payload["values"]
-
+    is_metrics_job = payload.get("is_metrics_job", False)
+    
     mark_processing(data_id)
-    summary = compute_summary(values)
+    
+    if is_metrics_job:
+        # New metrics-based job processing
+        node_id = payload["node_id"]
+        object_key = payload.get("object_key")
+        metrics = payload.get("metrics", {})
+        
+        # If object_key is present, fetch raw data from MinIO
+        if object_key:
+            raw_payload = fetch_raw_payload(object_key)
+            if isinstance(raw_payload, dict):
+                metrics = raw_payload.get("metrics", metrics)
+        
+        summary = compute_metrics_summary(metrics, node_id)
+    else:
+        # Legacy values-based job processing
+        values = payload["values"]
+        summary = compute_summary(values)
+    
     return mark_completed(data_id, summary)
 
 

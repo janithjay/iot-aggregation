@@ -14,6 +14,7 @@ from db.database import (
 from backend.exceptions import BackendError, RecordNotFoundError, ValidationError
 from backend.models import SensorSummary, generate_object_key
 from backend.validators import normalize_sensor_payload, validate_sensor_payload
+from shared.storage import store_raw_payload
 
 
 # ---------------------------------------------------------------------------
@@ -21,6 +22,7 @@ from backend.validators import normalize_sensor_payload, validate_sensor_payload
 # ---------------------------------------------------------------------------
 
 def ingest_sensor_payload(payload: dict) -> dict:
+    """Ingest sensor payload with node_id, store raw data to MinIO, and return record."""
     
     # Step 1 – validate
     validate_sensor_payload(payload)
@@ -28,22 +30,32 @@ def ingest_sensor_payload(payload: dict) -> dict:
     # Step 2 – normalize
     normalized = normalize_sensor_payload(payload)
     sensor_id: str = normalized.sensor_id
+    node_id: str = normalized.node_id
+    metrics: dict = normalized.metrics
 
     # Step 3 – generate identifiers
     data_id: str = str(uuid.uuid4())
     object_key: str = generate_object_key(sensor_id, data_id)
 
-    # Step 4 – persist
+    # Step 4 – store raw payload to MinIO
+    try:
+        store_raw_payload(object_key, payload)
+    except Exception as exc:
+        raise BackendError(f"Failed to store raw payload: {exc}") from exc
+
+    # Step 5 – persist record with node_id and metrics
     try:
         insert_record(
             data_id=data_id,
             sensor_id=sensor_id,
+            node_id=node_id,
             object_key=object_key,
+            metrics=metrics,
         )
     except Exception as exc:
         raise BackendError(f"Failed to insert record: {exc}") from exc
 
-    # Step 5 – fetch the newly created record
+    # Step 6 – fetch the newly created record
     try:
         record = get_record(data_id)
     except Exception as exc:
@@ -172,6 +184,33 @@ def compute_summary(values: list[float]) -> dict:
         count=len(values),
     )
     return summary.to_dict()
+
+
+def compute_metrics_summary(metrics: dict[str, float], node_id: str) -> dict:
+    """
+    Compute per-metric summaries from a metrics dictionary.
+    
+    Args:
+        metrics: Dictionary of {metric_name: value}
+        node_id: Node identifier for the metrics
+    
+    Returns:
+        Dictionary of {metric_name: {latest, count}} for single-reading payloads.
+        Legacy records may still include min/max/avg from older data.
+    """
+    if not isinstance(metrics, dict) or len(metrics) == 0:
+        return {}
+    
+    summary = {}
+    for metric_name, value in metrics.items():
+        if isinstance(value, (int, float)):
+            summary[metric_name] = {
+                "node_id": node_id,
+                "latest": float(value),
+                "count": 1,
+            }
+    
+    return summary
 
 
 # ---------------------------------------------------------------------------

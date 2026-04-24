@@ -90,20 +90,25 @@ def create_table_if_not_exists() -> bool:
     return True
 
 
-def insert_record(data_id: str, sensor_id: str, object_key: str):
+def insert_record(data_id: str, sensor_id: str, node_id: str, object_key: str, metrics: dict = None):
+    if metrics is None:
+        metrics = {}
+    
     item = {
         "data_id": data_id,
         "sensor_id": sensor_id,
+        "node_id": node_id,
         "object_key": object_key,
         "status": "pending",
         "summary": {},
+        "metrics": metrics,
         "timestamp": _now_iso(),
     }
     if _using_in_memory():
         _IN_MEMORY_STORE[data_id] = item
         return
 
-    _get_table().put_item(Item=item)
+    _get_table().put_item(Item=_to_dynamo_value(item))
 
 
 def update_record_status(data_id: str, status: str):
