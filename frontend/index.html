@@ -6,6 +6,7 @@
   <title>IoT Data Aggregation Hub</title>
   <link rel="stylesheet" href="styles.css">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.umd.min.js"></script>
 </head>
 <body>
   <!-- Navigation Header -->
@@ -20,7 +21,6 @@
       </div>
       <nav class="navbar-nav">
         <button class="nav-link active" data-section="dashboard">Dashboard</button>
-        <button class="nav-link" data-section="submit">Submit Data</button>
         <button class="nav-link" data-section="analytics">Analytics</button>
         <button class="nav-link" data-section="history">History</button>
       </nav>
@@ -45,164 +45,112 @@
   <main class="main-content">
     <!-- Dashboard Section -->
     <section id="dashboard-section" class="section active">
-      <div class="stats-grid">
-        <div class="stat-card">
-          <div class="stat-header">
-            <h3>Total Submissions</h3>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="12" cy="12" r="10"></circle>
-              <path d="M12 6v6l4 2"></path>
-            </svg>
-          </div>
-          <div class="stat-value" id="totalSubmissions">0</div>
-          <div class="stat-change">Last 24 hours</div>
-        </div>
-
-        <div class="stat-card">
-          <div class="stat-header">
-            <h3>Processing</h3>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="12" cy="12" r="10"></circle>
-              <path d="M12 6v6h6"></path>
-            </svg>
-          </div>
-          <div class="stat-value" id="processingCount">0</div>
-          <div class="stat-change">In queue</div>
-        </div>
-
-        <div class="stat-card">
-          <div class="stat-header">
-            <h3>Completed</h3>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <polyline points="20 6 9 17 4 12"></polyline>
-            </svg>
-          </div>
-          <div class="stat-value" id="completedCount">0</div>
-          <div class="stat-change">Success rate</div>
-        </div>
-
-        <div class="stat-card">
-          <div class="stat-header">
-            <h3>Failed</h3>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="12" cy="12" r="10"></circle>
-              <line x1="15" y1="9" x2="9" y2="15"></line>
-              <line x1="9" y1="9" x2="15" y2="15"></line>
-            </svg>
-          </div>
-          <div class="stat-value" id="failedCount">0</div>
-          <div class="stat-change">Errors</div>
+      <div class="dashboard-header">
+        <h2>IoT Sensor Dashboard</h2>
+        <div class="node-selector">
+          <label for="nodeFilter">Filter by Node:</label>
+          <select id="nodeFilter" class="form-input">
+            <option value="">All Nodes</option>
+            <option value="NODE_TH">Node TH (Temperature/Humidity)</option>
+            <option value="NODE_PA">Node PA (Pressure/Alcohol)</option>
+          </select>
         </div>
       </div>
 
-      <!-- Live Data Overview -->
-      <div class="dashboard-grid">
-        <div class="chart-container">
-          <h3>Status Distribution</h3>
-          <canvas id="statusChart"></canvas>
+      <!-- Node-Specific Panels -->
+      <div class="nodes-container" id="nodesContainer">
+        <!-- Node TH Panel -->
+        <div class="node-panel" data-node-id="NODE_TH">
+          <div class="node-header">
+            <h3>🌡️ Node TH - Temperature & Humidity</h3>
+            <span class="node-status" id="nodeStatus_NODE_TH">Offline</span>
+          </div>
+          <div class="metrics-grid" id="metrics_NODE_TH">
+            <div class="metric-card">
+              <span class="metric-label">Temperature (°C)</span>
+              <span class="metric-value">--</span>
+              <span class="metric-trend">Latest</span>
+            </div>
+            <div class="metric-card">
+              <span class="metric-label">Humidity (%)</span>
+              <span class="metric-value">--</span>
+              <span class="metric-trend">Latest</span>
+            </div>
+          </div>
         </div>
 
-        <div class="chart-container">
-          <h3>Submissions Timeline</h3>
-          <canvas id="submissionsChart"></canvas>
+        <!-- Node PA Panel -->
+        <div class="node-panel" data-node-id="NODE_PA">
+          <div class="node-header">
+            <h3>🌊 Node PA - Pressure & Ethanol</h3>
+            <span class="node-status" id="nodeStatus_NODE_PA">Offline</span>
+          </div>
+          <div class="metrics-grid" id="metrics_NODE_PA">
+            <div class="metric-card">
+              <span class="metric-label">Pressure (hPa)</span>
+              <span class="metric-value">--</span>
+              <span class="metric-trend">Latest</span>
+            </div>
+            <div class="metric-card">
+              <span class="metric-label">Ethanol (ppm)</span>
+              <span class="metric-value">--</span>
+              <span class="metric-trend">Latest</span>
+            </div>
+          </div>
         </div>
       </div>
+
+      <!-- Sensor Reading History -->
+      <section class="history-graphs-section">
+        <div class="history-graphs-header">
+          <div>
+            <h3>Sensor History Graphs</h3>
+            <p>Filter the graph range without changing the realtime sensor cards above.</p>
+          </div>
+          <div class="history-range-controls">
+            <div class="range-field">
+              <label for="historyFrom">From</label>
+              <input type="datetime-local" id="historyFrom" class="form-input" step="1">
+            </div>
+            <div class="range-field">
+              <label for="historyTo">To</label>
+              <input type="datetime-local" id="historyTo" class="form-input" step="1">
+            </div>
+            <div class="range-actions">
+              <button type="button" class="btn btn-small btn-primary" id="applyHistoryRangeBtn">Apply</button>
+              <button type="button" class="btn btn-small btn-secondary" id="clearHistoryRangeBtn">Clear</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="metrics-history-grid">
+          <div class="chart-container metric-chart-card">
+            <h3>Temperature History</h3>
+            <canvas id="temperatureChart"></canvas>
+          </div>
+
+          <div class="chart-container metric-chart-card">
+            <h3>Humidity History</h3>
+            <canvas id="humidityChart"></canvas>
+          </div>
+
+          <div class="chart-container metric-chart-card">
+            <h3>Pressure History</h3>
+            <canvas id="pressureChart"></canvas>
+          </div>
+
+          <div class="chart-container metric-chart-card">
+            <h3>Ethanol History</h3>
+            <canvas id="ethanolChart"></canvas>
+          </div>
+        </div>
+      </section>
 
       <!-- Recent Activity -->
       <div class="recent-activity">
         <h3>Recent Activity</h3>
         <div class="activity-list" id="activityList">
-          <div class="empty-state">No data available. Submit sensor data to get started.</div>
-        </div>
-      </div>
-    </section>
-
-    <!-- Submit Data Section -->
-    <section id="submit-section" class="section">
-      <div class="submit-container">
-        <div class="submit-card">
-          <h2>Submit Sensor Data</h2>
-          <p class="section-subtitle">Send IoT sensor readings for processing</p>
-
-          <form id="dataForm" class="form-grid">
-            <div class="form-group">
-              <label for="sensorId">Sensor ID *</label>
-              <input
-                type="text"
-                id="sensorId"
-                placeholder="e.g., SENSOR-01, TEMP-ZONE-A"
-                required
-                class="form-input"
-              />
-              <small>Unique identifier for your sensor</small>
-            </div>
-
-            <div class="form-group">
-              <label for="dataType">Data Type</label>
-              <select id="dataType" class="form-input">
-                <option value="manual">Manual Entry</option>
-                <option value="file">File Upload</option>
-              </select>
-            </div>
-
-            <div id="manualInput" class="form-full">
-              <div class="form-group">
-                <label for="values">Sensor Values *</label>
-                <textarea
-                  id="values"
-                  placeholder="Enter comma-separated values (e.g., 20.5, 21.3, 22.1)"
-                  class="form-input form-textarea"
-                  required
-                ></textarea>
-                <small>Enter temperature/humidity readings separated by commas</small>
-              </div>
-            </div>
-
-            <div id="fileInput" class="form-full" style="display: none;">
-              <div class="form-group">
-                <label for="csvFile">Upload CSV/JSON File</label>
-                <div class="file-upload">
-                  <input
-                    type="file"
-                    id="csvFile"
-                    accept=".csv,.json"
-                    class="file-input"
-                  />
-                  <div class="file-upload-label">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                      <polyline points="17 8 12 3 7 8"></polyline>
-                      <line x1="12" y1="3" x2="12" y2="15"></line>
-                    </svg>
-                    <span>Drop file here or click to browse</span>
-                  </div>
-                </div>
-                <small>Supported formats: CSV, JSON</small>
-              </div>
-            </div>
-
-            <div class="form-actions">
-              <button type="submit" class="btn btn-primary btn-lg">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <polyline points="12 5 12 19"></polyline>
-                  <polyline points="19 12 12 19 5 12"></polyline>
-                </svg>
-                Submit Data
-              </button>
-              <button type="reset" class="btn btn-secondary btn-lg">Clear</button>
-            </div>
-          </form>
-
-          <!-- Submission Result -->
-          <div id="submitResult" class="result-container"></div>
-        </div>
-
-        <!-- Data Preview -->
-        <div class="preview-card">
-          <h3>Data Preview</h3>
-          <div id="previewData" class="preview-content">
-            <div class="empty-state">Enter values to see preview</div>
-          </div>
+          <div class="empty-state">No data available. Waiting for sensor node uploads.</div>
         </div>
       </div>
     </section>
@@ -210,7 +158,39 @@
     <!-- Analytics Section -->
     <section id="analytics-section" class="section">
       <div class="analytics-header">
-        <h2>Analytics & Summaries</h2>
+        <h2>Analytics Insights</h2>
+      </div>
+
+      <div class="analytics-kpi-grid" id="analyticsKpiGrid"></div>
+
+      <div class="analytics-metrics-card">
+        <h3>Metric Performance (60m vs 24h)</h3>
+        <div class="table-container">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Metric</th>
+                <th>Latest</th>
+                <th>Avg 60m</th>
+                <th>Avg 24h</th>
+                <th>Trend</th>
+                <th>Min 24h</th>
+                <th>Max 24h</th>
+              </tr>
+            </thead>
+            <tbody id="analyticsMetricBody">
+              <tr class="loading-row">
+                <td colspan="7">Loading analytics...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="analytics-nodes-grid" id="analyticsNodesGrid"></div>
+
+      <div class="analytics-record-lookup">
+        <h3>Record Lookup (Optional)</h3>
         <div class="analytics-controls">
           <input
             type="text"
