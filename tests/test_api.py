@@ -45,15 +45,96 @@ def valid_sensor_payload():
 
 
 @pytest.fixture
+def valid_node_metrics_payload():
+    """Sample valid node-based metrics payload (new format)."""
+    return {
+        "node_id": "NODE_TH",
+        "sensor_id": "sensor-th-01",
+        "metrics": {
+            "temperature": 22.5,
+            "humidity": 45.2
+        }
+    }
+
+
+@pytest.fixture
+def valid_node_pa_payload():
+    """Sample valid NODE_PA metrics payload."""
+    return {
+        "node_id": "NODE_PA",
+        "sensor_id": "sensor-pa-01",
+        "metrics": {
+            "pressure": 1013.25,
+            "ethanol": 25.5
+        }
+    }
+
+
+@pytest.fixture
 def mock_record():
     """Mock database record."""
     return {
         "data_id": "550e8400-e29b-41d4-a716-446655440000",
         "sensor_id": "SENSOR-001",
+        "node_id": "NODE_TH",
         "object_key": "raw/SENSOR-001/550e8400-e29b-41d4-a716-446655440000.json",
         "status": "pending",
         "summary": None,
-        "created_at": "2025-04-21T10:30:45.123Z"
+        "metrics": {},
+        "timestamp": "2025-04-21T10:30:45.123Z"
+    }
+
+
+@pytest.fixture
+def mock_node_record():
+    """Mock node-based database record."""
+    return {
+        "data_id": "550e8400-e29b-41d4-a716-446655440001",
+        "sensor_id": "SENSOR-TH-01",
+        "node_id": "NODE_TH",
+        "object_key": "raw/SENSOR-TH-01/550e8400-e29b-41d4-a716-446655440001.json",
+        "status": "pending",
+        "summary": {},
+        "metrics": {
+            "temperature": 22.5,
+            "humidity": 45.2
+        },
+        "timestamp": "2025-04-21T10:30:45.123Z"
+    }
+
+
+@pytest.fixture
+def mock_node_completed_record():
+    """Mock node-based record after processing."""
+    return {
+        "data_id": "550e8400-e29b-41d4-a716-446655440001",
+        "sensor_id": "SENSOR-TH-01",
+        "node_id": "NODE_TH",
+        "object_key": "raw/SENSOR-TH-01/550e8400-e29b-41d4-a716-446655440001.json",
+        "status": "done",
+        "summary": {
+            "temperature": {
+                "node_id": "NODE_TH",
+                "latest": 22.5,
+                "min": 22.5,
+                "max": 22.5,
+                "avg": 22.5,
+                "count": 1
+            },
+            "humidity": {
+                "node_id": "NODE_TH",
+                "latest": 45.2,
+                "min": 45.2,
+                "max": 45.2,
+                "avg": 45.2,
+                "count": 1
+            }
+        },
+        "metrics": {
+            "temperature": 22.5,
+            "humidity": 45.2
+        },
+        "timestamp": "2025-04-21T10:30:45.123Z"
     }
 
 
@@ -63,6 +144,7 @@ def mock_completed_record():
     return {
         "data_id": "550e8400-e29b-41d4-a716-446655440000",
         "sensor_id": "SENSOR-001",
+        "node_id": "NODE_TH",
         "object_key": "raw/SENSOR-001/550e8400-e29b-41d4-a716-446655440000.json",
         "status": "done",
         "summary": {
@@ -71,7 +153,8 @@ def mock_completed_record():
             "avg": 23.475,
             "count": 4
         },
-        "created_at": "2025-04-21T10:30:45.123Z"
+        "metrics": {},
+        "timestamp": "2025-04-21T10:30:45.123Z"
     }
 
 
@@ -604,4 +687,127 @@ def test_full_workflow_simulation(
     assert response.status_code == 200
     assert response.json["status"] == "done"
     assert response.json["summary"]["avg"] == 23.475
+
+
+# ============================================================================
+# NODE-BASED METRICS TESTS - New Format
+# ============================================================================
+
+
+@patch("api.app.publish_job")
+@patch("api.app.ingest_sensor_payload")
+def test_post_node_metrics_success(mock_ingest, mock_publish, client, valid_node_metrics_payload, mock_node_record):
+    """Test successful node-based metrics ingestion."""
+    mock_ingest.return_value = mock_node_record
+    
+    response = client.post(
+        "/data",
+        data=json.dumps(valid_node_metrics_payload),
+        content_type="application/json"
+    )
+    
+    assert response.status_code == 202
+    assert response.json["data_id"] == mock_node_record["data_id"]
+    assert response.json["status"] == "pending"
+    mock_ingest.assert_called_once()
+    mock_publish.assert_called_once()
+    
+    # Verify job payload includes node_id and object_key
+    call_args = mock_publish.call_args[0][0]
+    assert call_args.get("node_id") == "NODE_TH"
+    assert call_args.get("object_key") is not None
+
+
+@patch("api.app.publish_job")
+@patch("api.app.ingest_sensor_payload")
+def test_post_node_pa_metrics_success(mock_ingest, mock_publish, client, valid_node_pa_payload):
+    """Test NODE_PA (pressure/ethanol) metrics ingestion."""
+    mock_record = {
+        "data_id": "test-id",
+        "node_id": "NODE_PA",
+        "sensor_id": "SENSOR-PA-01",
+        "object_key": "raw/SENSOR-PA-01/test-id.json",
+        "status": "pending",
+        "summary": {},
+        "metrics": {"pressure": 1013.25, "ethanol": 25.5},
+        "timestamp": "2025-04-21T10:30:45.123Z"
+    }
+    mock_ingest.return_value = mock_record
+    
+    response = client.post(
+        "/data",
+        data=json.dumps(valid_node_pa_payload),
+        content_type="application/json"
+    )
+    
+    assert response.status_code == 202
+    call_args = mock_publish.call_args[0][0]
+    assert call_args.get("node_id") == "NODE_PA"
+    assert call_args.get("metrics", {}).get("pressure") == 1013.25
+
+
+def test_post_data_missing_node_id(client):
+    """Test data ingestion fails when node_id is missing."""
+    payload = {
+        "sensor_id": "sensor-001",
+        "metrics": {"temperature": 22.5}
+    }
+    
+    response = client.post(
+        "/data",
+        data=json.dumps(payload),
+        content_type="application/json"
+    )
+    
+    assert response.status_code == 400
+    assert "node_id" in response.json["error"].lower()
+
+
+def test_post_data_invalid_node_id_type(client):
+    """Test data ingestion fails when node_id is not a string."""
+    payload = {
+        "node_id": 123,  # Should be string
+        "sensor_id": "sensor-001",
+        "metrics": {"temperature": 22.5}
+    }
+    
+    response = client.post(
+        "/data",
+        data=json.dumps(payload),
+        content_type="application/json"
+    )
+    
+    assert response.status_code == 400
+    assert "node_id" in response.json["error"].lower()
+
+
+@patch("api.app.publish_job")
+@patch("api.app.ingest_sensor_payload")
+@patch("api.app.get_summary_by_id")
+def test_node_workflow_with_metrics(
+    mock_get_summary, mock_ingest, mock_publish, client, valid_node_metrics_payload,
+    mock_node_record, mock_node_completed_record
+):
+    """Test full workflow for node-based metrics."""
+    data_id = mock_node_record["data_id"]
+    mock_ingest.return_value = mock_node_record
+    
+    # Step 1: Ingest
+    response = client.post(
+        "/data",
+        data=json.dumps(valid_node_metrics_payload),
+        content_type="application/json"
+    )
+    assert response.status_code == 202
+    assert response.json["status"] == "pending"
+    
+    # Step 2: Poll (completed)
+    mock_get_summary.return_value = mock_node_completed_record
+    response = client.get(f"/summary?id={data_id}")
+    assert response.status_code == 200
+    assert response.json["status"] == "done"
+    assert "temperature" in response.json["summary"]
+    assert "humidity" in response.json["summary"]
+    assert response.json["summary"]["temperature"]["latest"] == 22.5
+    assert response.json["summary"]["humidity"]["latest"] == 45.2
 

@@ -9,6 +9,7 @@ import pytest
 from backend.exceptions import BackendError, RecordNotFoundError, ValidationError
 from backend.models import NormalizedPayload, SensorSummary, generate_object_key
 from backend.services import (
+    compute_metrics_summary,
     compute_summary,
     get_summary_by_id,
     ingest_sensor_payload,
@@ -27,6 +28,7 @@ from backend.validators import normalize_sensor_payload, validate_sensor_payload
 def _make_record(
     data_id: str = "test-uuid",
     sensor_id: str = "S1",
+    node_id: str = "NODE_TH",
     status: str = "pending",
     summary: dict | None = None,
 ) -> dict:
@@ -34,6 +36,7 @@ def _make_record(
     return {
         "data_id": data_id,
         "sensor_id": sensor_id,
+        "node_id": node_id,
         "object_key": f"raw/{sensor_id}/{data_id}.json",
         "status": status,
         "summary": summary or {},
@@ -50,35 +53,47 @@ class TestValidateSensorPayload:
 
     def test_valid_payload(self):
         """A well-formed payload should not raise."""
-        validate_sensor_payload({"sensor_id": "S1", "values": [23, 25, 27]})
+        validate_sensor_payload({"node_id": "NODE_TH", "sensor_id": "S1", "values": [23, 25, 27]})
+
+    def test_valid_node_metrics_payload(self):
+        """A well-formed node-based metrics payload should not raise."""
+        validate_sensor_payload({"node_id": "NODE_TH", "sensor_id": "S1", "metrics": {"temperature": 22.5, "humidity": 45.0}})
+
+    def test_missing_node_id(self):
+        with pytest.raises(ValidationError, match="node_id is required"):
+            validate_sensor_payload({"sensor_id": "S1", "values": [1, 2]})
 
     def test_missing_sensor_id(self):
         with pytest.raises(ValidationError, match="sensor_id is required"):
-            validate_sensor_payload({"values": [1, 2]})
+            validate_sensor_payload({"node_id": "NODE_TH", "values": [1, 2]})
+
+    def test_node_id_not_string(self):
+        with pytest.raises(ValidationError, match="node_id must be a string"):
+            validate_sensor_payload({"node_id": 123, "sensor_id": "S1", "values": [1]})
 
     def test_sensor_id_not_string(self):
         with pytest.raises(ValidationError, match="sensor_id must be a string"):
-            validate_sensor_payload({"sensor_id": 123, "values": [1]})
+            validate_sensor_payload({"node_id": "NODE_TH", "sensor_id": 123, "values": [1]})
 
     def test_sensor_id_empty_string(self):
         with pytest.raises(ValidationError, match="must not be empty"):
-            validate_sensor_payload({"sensor_id": "   ", "values": [1]})
+            validate_sensor_payload({"node_id": "NODE_TH", "sensor_id": "   ", "values": [1]})
 
-    def test_missing_values(self):
-        with pytest.raises(ValidationError, match="values is required"):
-            validate_sensor_payload({"sensor_id": "S1"})
+    def test_missing_values_and_metrics(self):
+        with pytest.raises(ValidationError, match="Either metrics \\(dict\\) or values \\(list\\) must be provided"):
+            validate_sensor_payload({"node_id": "NODE_TH", "sensor_id": "S1"})
 
     def test_values_not_list(self):
         with pytest.raises(ValidationError, match="values must be a list"):
-            validate_sensor_payload({"sensor_id": "S1", "values": "not-a-list"})
+            validate_sensor_payload({"node_id": "NODE_TH", "sensor_id": "S1", "values": "not-a-list"})
 
     def test_empty_values(self):
         with pytest.raises(ValidationError, match="values must not be empty"):
-            validate_sensor_payload({"sensor_id": "S1", "values": []})
+            validate_sensor_payload({"node_id": "NODE_TH", "sensor_id": "S1", "values": []})
 
     def test_non_numeric_values(self):
         with pytest.raises(ValidationError, match="All values must be numeric"):
-            validate_sensor_payload({"sensor_id": "S1", "values": [1, "two", 3]})
+            validate_sensor_payload({"node_id": "NODE_TH", "sensor_id": "S1", "values": [1, "two", 3]})
 
     def test_payload_not_dict(self):
         with pytest.raises(ValidationError, match="Payload must be a dictionary"):
@@ -92,22 +107,29 @@ class TestValidateSensorPayload:
 class TestNormalizeSensorPayload:
     
 
+    def test_trims_and_uppercases_node_id(self):
+        result = normalize_sensor_payload({"node_id": "  node_th  ", "sensor_id": "s1", "values": [1]})
+        assert result.node_id == "NODE_TH"
+        assert result.sensor_id == "S1"
+
     def test_trims_sensor_id(self):
-        result = normalize_sensor_payload({"sensor_id": "  s1  ", "values": [1]})
+        result = normalize_sensor_payload({"node_id": "NODE_TH", "sensor_id": "  s1  ", "values": [1]})
         assert result.sensor_id == "S1"
 
     def test_uppercases_sensor_id(self):
-        result = normalize_sensor_payload({"sensor_id": "abc", "values": [1]})
+        result = normalize_sensor_payload({"node_id": "NODE_TH", "sensor_id": "abc", "values": [1]})
         assert result.sensor_id == "ABC"
 
     def test_values_cast_to_float(self):
-        result = normalize_sensor_payload({"sensor_id": "S1", "values": [1, 2, 3]})
+        result = normalize_sensor_payload({"node_id": "NODE_TH", "sensor_id": "S1", "values": [1, 2, 3]})
+        assert result.node_id == "NODE_TH"
         assert result.values == [1.0, 2.0, 3.0]
         assert all(isinstance(v, float) for v in result.values)
 
     def test_does_not_mutate_original(self):
-        original = {"sensor_id": "  s1  ", "values": [1, 2]}
+        original = {"node_id": "NODE_TH", "sensor_id": "  s1  ", "values": [1, 2]}
         normalize_sensor_payload(original)
+        assert original["node_id"] == "NODE_TH"
         assert original["sensor_id"] == "  s1  "
         assert original["values"] == [1, 2]
 
@@ -128,7 +150,7 @@ class TestModels:
         assert s.to_dict() == {"min": 1.0, "max": 5.0, "avg": 3.0, "count": 5}
 
     def test_normalized_payload_frozen(self):
-        p = NormalizedPayload(sensor_id="S1", values=[1.0])
+        p = NormalizedPayload(node_id="NODE_TH", sensor_id="S1", values=[1.0])
         with pytest.raises(AttributeError):
             p.sensor_id = "S2"  # type: ignore[misc]
 
@@ -147,15 +169,17 @@ class TestIngestSensorPayload:
         fake_uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
         mock_uuid.return_value = uuid.UUID(fake_uuid)
         mock_insert.return_value = None  # insert_record may return None
-        expected_record = _make_record(data_id=fake_uuid, sensor_id="S1")
+        expected_record = _make_record(data_id=fake_uuid, sensor_id="S1", node_id="NODE_TH")
         mock_get.return_value = expected_record
 
-        result = ingest_sensor_payload({"sensor_id": " s1 ", "values": [10, 20]})
+        result = ingest_sensor_payload({"node_id": "node_th", "sensor_id": " s1 ", "values": [10, 20]})
 
         mock_insert.assert_called_once_with(
             data_id=fake_uuid,
             sensor_id="S1",
+            node_id="NODE_TH",
             object_key=f"raw/S1/{fake_uuid}.json",
+            metrics={},
         )
         mock_get.assert_called_once_with(fake_uuid)
         assert result == expected_record
@@ -167,13 +191,13 @@ class TestIngestSensorPayload:
     @patch("backend.services.insert_record", side_effect=RuntimeError("DB down"))
     def test_ingest_db_failure_wraps_exception(self, _mock_insert):
         with pytest.raises(BackendError, match="Failed to insert record"):
-            ingest_sensor_payload({"sensor_id": "S1", "values": [1]})
+            ingest_sensor_payload({"node_id": "NODE_TH", "sensor_id": "S1", "values": [1]})
 
     @patch("backend.services.get_record", return_value=None)
     @patch("backend.services.insert_record", return_value=None)
     def test_ingest_get_record_returns_none_after_insert(self, _mock_insert, _mock_get):
         with pytest.raises(BackendError, match="not found after insert"):
-            ingest_sensor_payload({"sensor_id": "S1", "values": [1]})
+            ingest_sensor_payload({"node_id": "NODE_TH", "sensor_id": "S1", "values": [1]})
 
 
 # =========================================================================
@@ -368,4 +392,41 @@ class TestComputeSummary:
     def test_not_a_list_raises(self):
         with pytest.raises(ValidationError, match="non-empty list"):
             compute_summary("not-a-list")  # type: ignore[arg-type]
+
+
+class TestComputeMetricsSummary:
+
+    def test_single_metric_uses_compact_shape(self):
+        result = compute_metrics_summary({"temperature": 22.5}, "NODE_TH")
+        assert result == {
+            "temperature": {
+                "node_id": "NODE_TH",
+                "latest": 22.5,
+                "count": 1,
+            }
+        }
+
+    def test_multiple_metrics_uses_compact_shape(self):
+        result = compute_metrics_summary(
+            {"pressure": 1013.25, "ethanol": 31.1},
+            "NODE_PA",
+        )
+        assert result["pressure"] == {
+            "node_id": "NODE_PA",
+            "latest": 1013.25,
+            "count": 1,
+        }
+        assert result["ethanol"] == {
+            "node_id": "NODE_PA",
+            "latest": 31.1,
+            "count": 1,
+        }
+
+    def test_ignores_non_numeric_metric_values(self):
+        result = compute_metrics_summary(
+            {"temperature": 22.5, "status": "ok"},
+            "NODE_TH",
+        )
+        assert "temperature" in result
+        assert "status" not in result
 
