@@ -811,3 +811,165 @@ def test_node_workflow_with_metrics(
     assert response.json["summary"]["temperature"]["latest"] == 22.5
     assert response.json["summary"]["humidity"]["latest"] == 45.2
 
+
+# ============================================================================
+# Alert Tests - Fixtures
+# ============================================================================
+
+
+@pytest.fixture
+def mock_active_alert():
+    """Mock active alert record."""
+    return {
+        "alert_id": "SENSOR-TH-01:temperature",
+        "data_id": "550e8400-e29b-41d4-a716-446655440000",
+        "node_id": "NODE_TH",
+        "sensor_id": "SENSOR-TH-01",
+        "metric": "temperature",
+        "value": 45.5,
+        "message": "exceeded threshold (40.0 °C)",
+        "threshold": {
+            "type": "high",
+            "value": 40.0,
+            "unit": "°C",
+            "label": "Temperature"
+        },
+        "status": "active",
+        "timestamp": "2025-04-21T10:30:45.123Z",
+        "cleared_at": None
+    }
+
+
+@pytest.fixture
+def mock_cleared_alert():
+    """Mock cleared alert record."""
+    return {
+        "alert_id": "SENSOR-TH-01:temperature",
+        "data_id": "550e8400-e29b-41d4-a716-446655440000",
+        "node_id": "NODE_TH",
+        "sensor_id": "SENSOR-TH-01",
+        "metric": "temperature",
+        "value": 45.5,
+        "message": "exceeded threshold (40.0 °C)",
+        "threshold": {
+            "type": "high",
+            "value": 40.0,
+            "unit": "°C",
+            "label": "Temperature"
+        },
+        "status": "cleared",
+        "timestamp": "2025-04-21T10:30:45.123Z",
+        "cleared_at": "2025-04-21T10:35:45.123Z"
+    }
+
+
+# ============================================================================
+# Alert Tests - Success Cases
+# ============================================================================
+
+
+@patch("api.app.list_alerts")
+def test_get_alerts_success(mock_list_alerts, client, mock_active_alert):
+    """Test successful alerts retrieval."""
+    mock_list_alerts.return_value = [mock_active_alert]
+    
+    response = client.get("/alerts")
+    
+    assert response.status_code == 200
+    alerts = response.json["data"]
+    assert len(alerts) == 1
+    assert alerts[0]["alert_id"] == mock_active_alert["alert_id"]
+    assert alerts[0]["status"] == "active"
+    assert alerts[0]["metric"] == "temperature"
+
+
+@patch("api.app.list_alerts")
+def test_get_alerts_empty(mock_list_alerts, client):
+    """Test alerts retrieval with no active alerts."""
+    mock_list_alerts.return_value = []
+    
+    response = client.get("/alerts")
+    
+    assert response.status_code == 200
+    assert response.json["data"] == []
+
+
+@patch("api.app.clear_alert")
+def test_delete_alert_success(mock_clear_alert, client, mock_active_alert):
+    """Test successful alert clearing."""
+    alert_id = mock_active_alert["alert_id"]
+    mock_clear_alert.return_value = {**mock_active_alert, "status": "cleared"}
+    
+    response = client.delete(f"/alerts/{alert_id}")
+    
+    assert response.status_code == 200
+    assert response.json["alert_id"] == alert_id
+    assert response.json["status"] == "cleared"
+    mock_clear_alert.assert_called_once_with(alert_id)
+
+
+# ============================================================================
+# Alert Tests - Error Cases
+# ============================================================================
+
+
+@patch("api.app.list_alerts")
+def test_get_alerts_backend_error(mock_list_alerts, client):
+    """Test alerts retrieval when backend fails."""
+    mock_list_alerts.side_effect = BackendError("Database connection failed")
+    
+    response = client.get("/alerts")
+    
+    assert response.status_code == 500
+    assert "Database connection failed" in response.json["error"]
+
+
+@patch("api.app.clear_alert")
+def test_delete_alert_not_found(mock_clear_alert, client):
+    """Test alert clearing with non-existent alert_id."""
+    alert_id = "nonexistent-alert-id"
+    mock_clear_alert.return_value = None  # Alert doesn't exist
+    
+    response = client.delete(f"/alerts/{alert_id}")
+    
+    assert response.status_code == 404
+    assert "not found" in response.json["error"]
+
+
+@patch("api.app.clear_alert")
+def test_delete_alert_backend_error(mock_clear_alert, client):
+    """Test alert clearing when backend fails."""
+    alert_id = "SENSOR-TH-01:temperature"
+    mock_clear_alert.side_effect = BackendError("Database connection failed")
+    
+    response = client.delete(f"/alerts/{alert_id}")
+    
+    assert response.status_code == 500
+    assert "Database connection failed" in response.json["error"]
+
+
+def test_delete_alert_missing_id(client):
+    """Test DELETE /alerts without alert_id."""
+    response = client.delete("/alerts/")
+    
+    assert response.status_code == 404  # Flask will handle this as 404
+
+
+# ============================================================================
+# Alert Tests - HTTP Method Tests
+# ============================================================================
+
+
+def test_post_alerts_not_allowed(client):
+    """Test that POST /alerts is not allowed."""
+    response = client.post("/alerts")
+    
+    assert response.status_code == 405
+
+
+def test_put_alerts_not_allowed(client):
+    """Test that PUT /alerts is not allowed."""
+    response = client.put("/alerts/test-id")
+    
+    assert response.status_code == 405
+

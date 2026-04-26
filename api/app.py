@@ -13,6 +13,7 @@ from backend.services import (
     mark_failed,
 )
 from db.database import create_table_if_not_exists
+from db.alerts import create_alerts_table_if_not_exists, list_alerts, clear_alert
 from shared.queue import publish_job
 
 # Configure logging
@@ -31,6 +32,7 @@ def _ensure_db_initialized():
     if not _db_initialized:
         try:
             create_table_if_not_exists()
+            create_alerts_table_if_not_exists()
             _db_initialized = True
         except Exception as exc:
             logger.warning(f"Failed to initialize database: {exc}")
@@ -221,6 +223,33 @@ def list_uploads():
         
     except BackendError as exc:
         logger.error(f"Backend error listing records: {exc}")
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/alerts", methods=["GET"])
+def get_alerts():
+    """List persisted active alerts."""
+    try:
+        alerts = list_alerts(active_only=True)
+        return jsonify({"data": alerts}), 200
+    except Exception as exc:
+        logger.error(f"Error listing alerts: {exc}")
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/alerts/<alert_id>", methods=["DELETE"])
+def dismiss_alert(alert_id: str):
+    """Clear one alert by id while preserving history."""
+    if not alert_id:
+        return jsonify({"error": "alert_id is required"}), 400
+
+    try:
+        cleared = clear_alert(alert_id)
+        if not cleared:
+            return jsonify({"error": "not found"}), 404
+        return jsonify({"status": "cleared", "alert_id": alert_id}), 200
+    except Exception as exc:
+        logger.error(f"Error clearing alert {alert_id}: {exc}")
         return jsonify({"error": str(exc)}), 500
 
 
