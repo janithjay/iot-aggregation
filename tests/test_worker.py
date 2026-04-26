@@ -55,10 +55,11 @@ def test_process_job_success(mock_mark_processing, mock_compute_summary, mock_ma
     assert result["status"] == "done"
 
 
+@patch("worker.worker.get_alert_state", return_value=None)
 @patch("worker.worker.mark_completed")
 @patch("worker.worker.compute_metrics_summary")
 @patch("worker.worker.mark_processing")
-def test_process_job_node_metrics_success(mock_mark_processing, mock_compute_metrics, mock_mark_completed):
+def test_process_job_node_metrics_success(mock_mark_processing, mock_compute_metrics, mock_mark_completed, mock_get_alert_state):
     """Test node-based metrics job processing."""
     mock_compute_metrics.return_value = {
         "temperature": {
@@ -96,12 +97,13 @@ def test_process_job_node_metrics_success(mock_mark_processing, mock_compute_met
     assert result["status"] == "done"
 
 
+@patch("worker.worker.get_alert_state", return_value=None)
 @patch("worker.worker.fetch_raw_payload")
 @patch("worker.worker.mark_completed")
 @patch("worker.worker.compute_metrics_summary")
 @patch("worker.worker.mark_processing")
 def test_process_job_fetches_from_minio(
-    mock_mark_processing, mock_compute_metrics, mock_mark_completed, mock_fetch
+    mock_mark_processing, mock_compute_metrics, mock_mark_completed, mock_fetch, mock_get_alert_state
 ):
     """Test that worker fetches from MinIO when object_key is available."""
     mock_fetch.return_value = {
@@ -156,3 +158,152 @@ def test_on_message_acknowledges_after_processing(mock_parse, mock_process):
 
     mock_process.assert_called_once()
     channel.basic_ack.assert_called_once_with(delivery_tag="tag-1")
+
+
+@patch("worker.worker.get_alert_state", return_value=None)
+@patch("worker.worker.upsert_alert_state")
+@patch("worker.worker.upsert_alert")
+@patch("worker.worker.mark_completed")
+@patch("worker.worker.compute_metrics_summary")
+@patch("worker.worker.mark_processing")
+def test_process_job_creates_alert_on_threshold_breach(
+    mock_mark_processing, mock_compute_metrics, mock_mark_completed, mock_upsert_alert, mock_upsert_alert_state, mock_get_alert_state
+):
+    """Test that alerts are created when metrics exceed thresholds."""
+    mock_compute_metrics.return_value = {
+        "temperature": {"node_id": "NODE_TH", "latest": 45.5, "count": 1},
+        "humidity": {"node_id": "NODE_TH", "latest": 60.0, "count": 1}
+    }
+    mock_mark_completed.return_value = {
+        "data_id": "alert-test-123",
+        "status": "done",
+        "summary": {
+            "temperature": {"node_id": "NODE_TH", "latest": 45.5, "count": 1},
+            "humidity": {"node_id": "NODE_TH", "latest": 60.0, "count": 1}
+        }
+    }
+    
+    job_payload = {
+        "data_id": "alert-test-123",
+        "node_id": "NODE_TH",
+        "sensor_id": "SENSOR-TH-01",
+        "object_key": "raw/sensor-th/alert-test-123.json",
+        "metrics": {"temperature": 45.5, "humidity": 60.0},
+        "is_metrics_job": True,
+    }
+    
+    result = process_job(job_payload)
+    
+    assert result["status"] == "done"
+    # Should create alert for temperature (45.5 > 40.0)
+    mock_upsert_alert.assert_called_once()
+    mock_upsert_alert_state.assert_called_once()
+    call_args = mock_upsert_alert.call_args[0][0]
+    assert call_args["alert_id"] == "alert-test-123:temperature"
+    assert call_args["metric"] == "temperature"
+    assert call_args["value"] == 45.5
+    assert "exceeded threshold" in call_args["message"]
+
+
+@patch("worker.worker.get_alert_state", return_value=None)
+@patch("worker.worker.upsert_alert_state")
+@patch("worker.worker.upsert_alert")
+@patch("worker.worker.mark_completed")
+@patch("worker.worker.compute_metrics_summary")
+@patch("worker.worker.mark_processing")
+def test_process_job_no_alert_when_within_thresholds(
+    mock_mark_processing, mock_compute_metrics, mock_mark_completed, mock_upsert_alert, mock_upsert_alert_state, mock_get_alert_state
+):
+    """Test that no alerts are created when metrics are within thresholds."""
+    mock_compute_metrics.return_value = {
+        "temperature": {"node_id": "NODE_TH", "latest": 35.0, "count": 1},
+        "humidity": {"node_id": "NODE_TH", "latest": 60.0, "count": 1}
+    }
+    mock_mark_completed.return_value = {
+        "data_id": "normal-test-123",
+        "status": "done",
+        "summary": {
+            "temperature": {"node_id": "NODE_TH", "latest": 35.0, "count": 1},
+            "humidity": {"node_id": "NODE_TH", "latest": 60.0, "count": 1}
+        }
+    }
+    
+    job_payload = {
+        "data_id": "normal-test-123",
+        "node_id": "NODE_TH",
+        "sensor_id": "SENSOR-TH-01",
+        "object_key": "raw/sensor-th/normal-test-123.json",
+        "metrics": {"temperature": 35.0, "humidity": 60.0},
+        "is_metrics_job": True,
+    }
+    
+    result = process_job(job_payload)
+    
+    assert result["status"] == "done"
+    # Should not create any alerts
+    mock_upsert_alert.assert_not_called()
+    mock_upsert_alert_state.assert_not_called()
+
+
+@patch("worker.worker.get_alert_state")
+@patch("worker.worker.upsert_alert_state")
+@patch("worker.worker.upsert_alert")
+@patch("worker.worker.mark_completed")
+@patch("worker.worker.compute_metrics_summary")
+@patch("worker.worker.mark_processing")
+def test_process_job_realerts_after_recovery_transition(
+    mock_mark_processing,
+    mock_compute_metrics,
+    mock_mark_completed,
+    mock_upsert_alert,
+    mock_upsert_alert_state,
+    mock_get_alert_state,
+):
+    """Alert flow should re-arm on recovery and create a new alert on the next breach."""
+    mock_compute_metrics.side_effect = [
+        {"temperature": {"node_id": "NODE_TH", "latest": 45.5, "count": 1}},
+        {"temperature": {"node_id": "NODE_TH", "latest": 35.0, "count": 1}},
+        {"temperature": {"node_id": "NODE_TH", "latest": 46.0, "count": 1}},
+    ]
+    mock_mark_completed.side_effect = [
+        {"data_id": "alert-1", "status": "done", "summary": {"temperature": {"latest": 45.5}}},
+        {"data_id": "normal-1", "status": "done", "summary": {"temperature": {"latest": 35.0}}},
+        {"data_id": "alert-2", "status": "done", "summary": {"temperature": {"latest": 46.0}}},
+    ]
+    mock_get_alert_state.side_effect = [
+        None,
+        {"state_id": "SENSOR-TH-01:temperature", "status": "breached"},
+        {"state_id": "SENSOR-TH-01:temperature", "status": "normal"},
+    ]
+
+    payload_1 = {
+        "data_id": "alert-1",
+        "node_id": "NODE_TH",
+        "sensor_id": "SENSOR-TH-01",
+        "object_key": "raw/sensor-th/alert-1.json",
+        "metrics": {"temperature": 45.5},
+        "is_metrics_job": True,
+    }
+    payload_2 = {
+        "data_id": "normal-1",
+        "node_id": "NODE_TH",
+        "sensor_id": "SENSOR-TH-01",
+        "object_key": "raw/sensor-th/normal-1.json",
+        "metrics": {"temperature": 35.0},
+        "is_metrics_job": True,
+    }
+    payload_3 = {
+        "data_id": "alert-2",
+        "node_id": "NODE_TH",
+        "sensor_id": "SENSOR-TH-01",
+        "object_key": "raw/sensor-th/alert-2.json",
+        "metrics": {"temperature": 46.0},
+        "is_metrics_job": True,
+    }
+
+    process_job(payload_1)
+    process_job(payload_2)
+    process_job(payload_3)
+
+    assert mock_upsert_alert.call_count == 2
+    assert mock_upsert_alert_state.call_count == 3

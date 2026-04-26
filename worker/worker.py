@@ -19,6 +19,13 @@ except ImportError:
 
 from backend.exceptions import BackendError, RecordNotFoundError, ValidationError
 from backend.services import compute_summary, compute_metrics_summary, mark_completed, mark_failed, mark_processing
+from db.alerts import (
+    create_alert_states_table_if_not_exists,
+    create_alerts_table_if_not_exists,
+    get_alert_state,
+    upsert_alert,
+    upsert_alert_state,
+)
 from db.database import create_table_if_not_exists
 from shared.config import MAX_JOB_RETRIES, QUEUE_NAME, RABBITMQ_URL, RETRY_BACKOFF_SECONDS
 from shared.queue import publish_job
@@ -27,6 +34,13 @@ from shared.storage import fetch_raw_payload
 
 logger = logging.getLogger("worker")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+ALERT_THRESHOLDS = {
+    "temperature": {"type": "high", "value": 40.0, "unit": "°C", "label": "Temperature"},
+    "humidity": {"type": "high", "value": 80.0, "unit": "%", "label": "Humidity"},
+    "pressure": {"type": "range", "min": 980.0, "max": 1030.0, "unit": "hPa", "label": "Pressure"},
+    "ethanol": {"type": "high", "value": 30.0, "unit": "ppm", "label": "Ethanol"},
+}
 
 
 def parse_job_message(body: bytes) -> dict:
@@ -87,12 +101,78 @@ def process_job(payload: dict) -> dict:
                 metrics = raw_payload.get("metrics", metrics)
         
         summary = compute_metrics_summary(metrics, node_id)
+
+        for event in _build_alert_events(payload, summary):
+            upsert_alert(event)
     else:
         # Legacy values-based job processing
         values = payload["values"]
         summary = compute_summary(values)
     
     return mark_completed(data_id, summary)
+
+
+def _build_alert_events(payload: dict, summary: dict) -> list[dict]:
+    data_id = payload.get("data_id")
+    node_id = payload.get("node_id")
+    sensor_id = payload.get("sensor_id")
+    events = []
+
+    if not isinstance(summary, dict):
+        return events
+
+    for metric_name, metric_summary in summary.items():
+        if not isinstance(metric_summary, dict):
+            continue
+        value = metric_summary.get("latest")
+        if not isinstance(value, (int, float)):
+            continue
+
+        threshold = ALERT_THRESHOLDS.get(metric_name)
+        if not threshold:
+            continue
+
+        state_id = f"{sensor_id}:{metric_name}"
+        alert_state = get_alert_state(state_id)
+
+        message = _evaluate_threshold_message(threshold, float(value))
+        if not message:
+            if alert_state and alert_state.get("status") == "breached":
+                upsert_alert_state({"state_id": state_id, "status": "normal", "sensor_id": sensor_id, "metric": metric_name})
+            continue
+
+        # Avoid duplicate alerts while the metric is already in breached state.
+        if alert_state and alert_state.get("status") == "breached":
+            continue
+
+        alert_id = f"{data_id}:{metric_name}"
+        events.append(
+            {
+                "alert_id": alert_id,
+                "data_id": data_id,
+                "node_id": node_id,
+                "sensor_id": sensor_id,
+                "metric": metric_name,
+                "value": float(value),
+                "threshold": threshold,
+                "message": message,
+                "status": "active",
+            }
+        )
+        upsert_alert_state({"state_id": state_id, "status": "breached", "sensor_id": sensor_id, "metric": metric_name, "alert_id": alert_id})
+
+    return events
+
+
+def _evaluate_threshold_message(threshold: dict, value: float) -> str | None:
+    ttype = threshold.get("type")
+    if ttype == "high" and value > float(threshold["value"]):
+        return f"exceeded threshold ({threshold['value']} {threshold['unit']})"
+    if ttype == "low" and value < float(threshold["value"]):
+        return f"dropped below threshold ({threshold['value']} {threshold['unit']})"
+    if ttype == "range" and (value < float(threshold["min"]) or value > float(threshold["max"])):
+        return f"outside range ({threshold['min']}-{threshold['max']} {threshold['unit']})"
+    return None
 
 
 def handle_job_failure(payload: dict, error: Exception) -> str:
@@ -151,6 +231,8 @@ def _build_connection() -> pika.BlockingConnection:
 
 def start_worker_loop() -> None:
     create_table_if_not_exists()
+    create_alerts_table_if_not_exists()
+    create_alert_states_table_if_not_exists()
 
     while True:
         connection = None
