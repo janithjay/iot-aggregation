@@ -24,6 +24,8 @@ let appState = {
     from: '',
     to: '',
   },
+  alerts: [],
+  activeAlertKeys: new Set(),
   charts: {},
 };
 
@@ -140,13 +142,21 @@ async function loadDashboardData(options = {}) {
 
     // Apply node filter if selected
     const nodeFilter = document.getElementById('nodeFilter')?.value || '';
-    let filteredData = appState.allData;
-    if (nodeFilter) {
-      filteredData = appState.allData.filter(d => d.node_id === nodeFilter);
+    const filteredData = nodeFilter
+      ? appState.allData.filter((d) => d.node_id === nodeFilter)
+      : appState.allData;
+
+    try {
+      const alertsResponse = await fetchFromAPI('/alerts');
+      appState.alerts = Array.isArray(alertsResponse.data) ? alertsResponse.data : [];
+    } catch (alertError) {
+      appState.alerts = [];
+      console.warn('Failed to load alerts:', alertError);
     }
 
     updateStatistics(filteredData);
-    updateNodePanels(appState.allData);
+    updateNodePanels(filteredData);
+    renderAlerts(appState.alerts);
     updateActivityFeed(filteredData);
     renderCharts(filteredData);
   } catch (error) {
@@ -187,13 +197,12 @@ function updateStatistics(data = appState.allData) {
 }
 
 function updateNodePanels(data = appState.allData) {
-  // Update each node panel with latest metrics
   const nodeIds = ['NODE_TH', 'NODE_PA'];
   const now = Date.now();
-  
-  nodeIds.forEach(nodeId => {
-    const nodeData = data.filter(d => d.node_id === nodeId);
-    const latestRecord = nodeData.length > 0
+
+  nodeIds.forEach((nodeId) => {
+    const nodeData = data.filter((d) => d.node_id === nodeId);
+    const latestRecord = nodeData.length
       ? nodeData.reduce((latest, current) => {
           return new Date(current.timestamp).getTime() > new Date(latest.timestamp).getTime()
             ? current
@@ -202,128 +211,150 @@ function updateNodePanels(data = appState.allData) {
       : null;
 
     const latestTimestamp = latestRecord ? new Date(latestRecord.timestamp).getTime() : 0;
-    const isFresh = latestRecord && (now - latestTimestamp) <= NODE_ONLINE_THRESHOLD_MS;
-    const isDone = latestRecord?.status === 'done';
-    const isDisconnected = !latestRecord || !isFresh;
-    
-    // Update node status
+    const isFresh = latestRecord && !Number.isNaN(latestTimestamp) && now - latestTimestamp <= NODE_ONLINE_THRESHOLD_MS;
     const statusEl = document.getElementById(`nodeStatus_${nodeId}`);
+    const metricsEl = document.getElementById(`metrics_${nodeId}`);
+    const metricKeys = nodeId === 'NODE_TH' ? ['temperature', 'humidity'] : ['pressure', 'ethanol'];
+
     if (statusEl) {
-      if (isDisconnected) {
+      if (!latestRecord) {
+        statusEl.textContent = 'Offline';
+        statusEl.className = 'node-status disconnected';
+      } else if (!isFresh || latestRecord.status !== 'done') {
         statusEl.textContent = 'Disconnected';
         statusEl.className = 'node-status disconnected';
-      } else if (isDone) {
+      } else {
         statusEl.textContent = 'Online';
         statusEl.className = 'node-status online';
-      } else {
-        statusEl.textContent = 'Pending';
-        statusEl.className = 'node-status offline';
       }
     }
-    
-    // Update metrics display with explicit metric mapping (not object order)
-    const metricsContainer = document.getElementById(`metrics_${nodeId}`);
-    if (metricsContainer) {
-      const metricCards = metricsContainer.querySelectorAll('.metric-card');
-      const summary = latestRecord?.summary || {};
 
-      const metricKeys = nodeId === 'NODE_TH'
-        ? ['temperature', 'humidity']
-        : ['pressure', 'ethanol'];
+    if (metricsEl) {
+      const metricCards = Array.from(metricsEl.querySelectorAll('.metric-card'));
+      metricCards.forEach((card, index) => {
+        const valueEl = card.querySelector('.metric-value');
+        const trendEl = card.querySelector('.metric-trend');
+        const metricKey = metricKeys[index];
+        const value = latestRecord?.summary?.[metricKey]?.latest;
 
-      metricKeys.forEach((metricKey, index) => {
-        if (index >= metricCards.length) {
-          return;
+        if (valueEl) {
+          valueEl.textContent = value !== undefined && value !== null ? formatMetricValue(value) : '--';
         }
-        const card = metricCards[index];
-        const metric = summary[metricKey];
-
-        if (metric && metric.latest !== undefined) {
-          card.querySelector('.metric-value').textContent = Number(metric.latest).toFixed(2);
-          const hasAggregateStats =
-            metric.min !== undefined && metric.max !== undefined && metric.avg !== undefined;
-
-          if (hasAggregateStats) {
-            card.querySelector('.metric-trend').textContent = `Min: ${Number(metric.min).toFixed(2)}, Max: ${Number(metric.max).toFixed(2)}, Avg: ${Number(metric.avg).toFixed(2)}`;
-          } else {
-            card.querySelector('.metric-trend').textContent = `Reading count: ${metric.count ?? 1}`;
-          }
-        } else {
-          card.querySelector('.metric-value').textContent = '--';
-          card.querySelector('.metric-trend').textContent = 'Latest';
+        if (trendEl) {
+          trendEl.textContent = latestRecord && isFresh && latestRecord.status === 'done' ? 'Latest' : 'No data';
         }
       });
     }
   });
 }
 
+function renderAlerts(alerts = appState.alerts) {
+  const alertsList = document.getElementById('alertsList');
+  if (!alertsList) {
+    return;
+  }
+
+  const activeAlerts = [...(alerts || [])].filter((alert) => alert.status === 'active');
+  const normalizedAlerts = activeAlerts.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+  const nextAlertKeys = new Set(normalizedAlerts.map((alert) => alert.alert_id));
+  const previousAlertKeys = appState.activeAlertKeys;
+
+  normalizedAlerts.forEach((alert) => {
+    if (!previousAlertKeys.has(alert.alert_id)) {
+      showToast('Sensor Alert', `${alert.node_id} ${alert.metric} ${alert.message}`, 'warning');
+    }
+  });
+
+  appState.activeAlertKeys = nextAlertKeys;
+
+  if (normalizedAlerts.length === 0) {
+    alertsList.innerHTML = '<div class="empty-state compact">No active alerts.</div>';
+    return;
+  }
+
+  alertsList.innerHTML = normalizedAlerts
+    .map(
+      (alert) => `
+      <div class="alert-item">
+        <div>
+          <div class="alert-title">${alert.node_id} · ${alert.metric}</div>
+          <div class="alert-message">${alert.message}</div>
+          <div class="alert-time">${formatDateTime(alert.timestamp)}</div>
+        </div>
+        <div class="alert-actions">
+          <div class="alert-value">${Number(alert.value).toFixed(2)}</div>
+          <button type="button" class="btn btn-small btn-secondary clear-alert-btn" data-alert-id="${alert.alert_id}">Clear</button>
+        </div>
+      </div>
+    `
+    )
+    .join('');
+
+  alertsList.querySelectorAll('.clear-alert-btn').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const alertId = btn.dataset.alertId;
+      if (!alertId) {
+        return;
+      }
+      await clearAlert(alertId);
+    });
+  });
+}
+
+async function clearAlert(alertId) {
+  try {
+    await fetchFromAPI(`/alerts/${encodeURIComponent(alertId)}`, { method: 'DELETE' });
+    appState.alerts = appState.alerts.filter((alert) => alert.alert_id !== alertId);
+    appState.activeAlertKeys.delete(alertId);
+    renderAlerts(appState.alerts);
+    showToast('Alert Cleared', `Alert ${truncateId(alertId)} cleared`, 'success');
+  } catch (error) {
+    showToast('Clear Alert Failed', error.message, 'error');
+  }
+}
+
 function updateActivityFeed(data = appState.allData) {
   const activityList = document.getElementById('activityList');
-  const items = [...data]
-    .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
-    .slice(0, 10);
+  if (!activityList) {
+    return;
+  }
 
-  if (items.length === 0) {
+  const sorted = [...(data || [])].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+  const latestItems = sorted.slice(0, 8);
+
+  if (latestItems.length === 0) {
     activityList.innerHTML = '<div class="empty-state">No data available. Waiting for sensor node uploads.</div>';
     return;
   }
 
-  activityList.innerHTML = items
-    .map(
-      (item) => `
-    <div class="activity-item">
-      <div class="activity-time">${formatTime(item.timestamp)}</div>
-      <div class="activity-text">
-        <strong>${item.sensor_id}</strong> (${item.node_id}) • ${truncateId(item.data_id)}
+  activityList.innerHTML = latestItems
+    .map((item) => `
+      <div class="activity-item">
+        <div class="activity-time">${formatTime(item.timestamp)}</div>
+        <div class="activity-text">
+          <strong>${item.sensor_id || 'Unknown sensor'}</strong> (${item.node_id || 'Unknown node'}) • ${truncateId(item.data_id)}
+        </div>
+        <div class="activity-status ${getStatusClass(item.status)}">${item.status || 'unknown'}</div>
       </div>
-      <span class="activity-status ${getStatusClass(item.status)}">${item.status}</span>
-    </div>
-  `
-    )
+    `)
     .join('');
 }
 
 function renderCharts(data = appState.allData) {
-  renderMetricHistoryCharts(data);
-}
-
-function renderMetricHistoryCharts(data = appState.allData) {
   const metricConfigs = [
-    {
-      chartKey: 'temperatureChart',
-      elementId: 'temperatureChart',
-      label: 'Temperature (°C)',
-      metricKey: 'temperature',
-      color: '#f97316',
-    },
-    {
-      chartKey: 'humidityChart',
-      elementId: 'humidityChart',
-      label: 'Humidity (%)',
-      metricKey: 'humidity',
-      color: '#0ea5e9',
-    },
-    {
-      chartKey: 'pressureChart',
-      elementId: 'pressureChart',
-      label: 'Pressure (hPa)',
-      metricKey: 'pressure',
-      color: '#22c55e',
-    },
-    {
-      chartKey: 'ethanolChart',
-      elementId: 'ethanolChart',
-      label: 'Ethanol (ppm)',
-      metricKey: 'ethanol',
-      color: '#a855f7',
-    },
+    { chartKey: 'temperatureChart', label: 'Temperature (°C)', metricKey: 'temperature', color: '#22c55e' },
+    { chartKey: 'humidityChart', label: 'Humidity (%)', metricKey: 'humidity', color: '#38bdf8' },
+    { chartKey: 'pressureChart', label: 'Pressure (hPa)', metricKey: 'pressure', color: '#f97316' },
+    { chartKey: 'ethanolChart', label: 'Ethanol (ppm)', metricKey: 'ethanol', color: '#f43f5e' },
   ];
 
   metricConfigs.forEach((config) => {
-    const ctx = document.getElementById(config.elementId)?.getContext('2d');
-    if (!ctx) return;
-
-    const chartData = buildMetricHistorySeries(filterRecordsByHistoryRange(data), config.metricKey);
+    const chartData = buildMetricHistorySeries(data, config.metricKey);
+    const ctx = document.getElementById(config.chartKey);
+    if (!ctx) {
+      return;
+    }
 
     if (appState.charts[config.chartKey]) {
       appState.charts[config.chartKey].destroy();
@@ -999,9 +1030,11 @@ function setupStatusRefresh() {
   appState.statusInterval = setInterval(() => {
     if (appState.currentSection === 'dashboard') {
       updateNodePanels(appState.allData);
+      renderAlerts(appState.alerts);
     }
   }, STATUS_REFRESH_INTERVAL);
 }
+
 
 function toggleAutoRefresh(e) {
   appState.autoRefresh = e.target.checked;

@@ -645,6 +645,71 @@ body {
   font-size: 0.9rem;
 }
 
+.alerts-section {
+  background: linear-gradient(135deg, var(--bg-card) 0%, rgba(30, 41, 59, 0.6) 100%);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  padding: var(--spacing-lg);
+  box-shadow: var(--shadow-md);
+  margin-bottom: var(--spacing-lg);
+}
+
+.alerts-section h3 {
+  margin-bottom: var(--spacing-md);
+  color: var(--warning-color);
+  font-size: 1rem;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.alerts-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+}
+
+.alert-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--spacing-md);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  border-radius: var(--radius-md);
+  background: rgba(245, 158, 11, 0.08);
+  padding: var(--spacing-sm) var(--spacing-md);
+}
+
+.alert-title {
+  color: var(--warning-color);
+  font-weight: 700;
+  font-size: 0.92rem;
+}
+
+.alert-message {
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+}
+
+.alert-time {
+  color: var(--text-tertiary);
+  font-size: 0.78rem;
+  margin-top: 0.2rem;
+}
+
+.alert-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--spacing-xs);
+}
+
+.alert-value {
+  color: var(--text-primary);
+  font-weight: 700;
+  font-size: 0.95rem;
+  white-space: nowrap;
+}
+
 /* ============================================
    RECENT ACTIVITY
    ============================================ */
