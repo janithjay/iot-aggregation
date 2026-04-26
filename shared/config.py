@@ -11,6 +11,7 @@ MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minioadmin")
 
 DYNAMO_TABLE = os.getenv("DYNAMO_TABLE", "iot_data")
+ALERTS_TABLE = os.getenv("ALERTS_TABLE", "iot_alerts")
 DYNAMO_ENDPOINT = os.getenv("DYNAMO_ENDPOINT", "http://dynamodb-local:8000")
 AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 

@@ -4,14 +4,28 @@
 
 // Configuration
 const API_BASE_URL = window.IOT_API_BASE_URL || '/api';
-const AUTO_REFRESH_INTERVAL = 5000; // 5 seconds
+const AUTO_REFRESH_INTERVAL = 2000; // 2 seconds
+const STATUS_REFRESH_INTERVAL = 1000; // 1 second local UI refresh
+const NODE_ONLINE_THRESHOLD_MS = 15000;
+
+const zoomPlugin = window.ChartZoom || window.chartjsPluginZoom || window['chartjs-plugin-zoom'];
+if (zoomPlugin && window.Chart && typeof window.Chart.register === 'function') {
+  window.Chart.register(zoomPlugin);
+}
 
 // Global State
 let appState = {
   currentSection: 'dashboard',
   autoRefresh: true,
   refreshInterval: null,
+  statusInterval: null,
   allData: [],
+  historyRange: {
+    from: '',
+    to: '',
+  },
+  alerts: [],
+  activeAlertKeys: new Set(),
   charts: {},
 };
 
@@ -24,6 +38,7 @@ document.addEventListener('DOMContentLoaded', () => {
   switchToSection('dashboard');
   loadDashboardData();
   setupAutoRefresh();
+  setupStatusRefresh();
 });
 
 function initializeEventListeners() {
@@ -39,62 +54,38 @@ function initializeEventListeners() {
   document.getElementById('refreshBtn').addEventListener('click', refreshCurrentSection);
   document.getElementById('autoRefreshToggle').addEventListener('change', toggleAutoRefresh);
 
-  // Form Submission
-  document.getElementById('dataForm').addEventListener('submit', (e) => {
-    e.preventDefault();
-    submitSensorData();
-  });
+  // Node Filter in Dashboard
+  const nodeFilter = document.getElementById('nodeFilter');
+  if (nodeFilter) {
+    nodeFilter.addEventListener('change', loadDashboardData);
+  }
 
-  // Data Type Toggle
-  document.getElementById('dataType').addEventListener('change', (e) => {
-    const manualInput = document.getElementById('manualInput');
-    const fileInput = document.getElementById('fileInput');
-    if (e.target.value === 'manual') {
-      manualInput.style.display = 'block';
-      fileInput.style.display = 'none';
-      document.getElementById('values').required = true;
-      document.getElementById('csvFile').required = false;
-    } else {
-      manualInput.style.display = 'none';
-      fileInput.style.display = 'block';
-      document.getElementById('values').required = false;
-      document.getElementById('csvFile').required = true;
-    }
-  });
+  const applyHistoryRangeBtn = document.getElementById('applyHistoryRangeBtn');
+  if (applyHistoryRangeBtn) {
+    applyHistoryRangeBtn.addEventListener('click', applyHistoryRange);
+  }
 
-  // File Upload
-  const csvFile = document.getElementById('csvFile');
-  const fileUpload = document.querySelector('.file-upload');
-  fileUpload.addEventListener('click', () => csvFile.click());
-  fileUpload.addEventListener('dragover', (e) => {
-    e.preventDefault();
-    fileUpload.style.background = 'rgba(0, 212, 255, 0.2)';
-  });
-  fileUpload.addEventListener('dragleave', () => {
-    fileUpload.style.background = '';
-  });
-  fileUpload.addEventListener('drop', (e) => {
-    e.preventDefault();
-    fileUpload.style.background = '';
-    const files = e.dataTransfer.files;
-    if (files.length > 0) {
-      csvFile.files = files;
-      updateFileUploadLabel(files[0].name);
-    }
-  });
+  const clearHistoryRangeBtn = document.getElementById('clearHistoryRangeBtn');
+  if (clearHistoryRangeBtn) {
+    clearHistoryRangeBtn.addEventListener('click', clearHistoryRange);
+  }
 
   // Analytics
-  document.getElementById('searchSummaryBtn').addEventListener('click', searchSummary);
-  document.getElementById('summarySearchId').addEventListener('keypress', (e) => {
-    if (e.key === 'Enter') searchSummary();
-  });
+  const searchSummaryBtn = document.getElementById('searchSummaryBtn');
+  const summarySearchId = document.getElementById('summarySearchId');
+  if (searchSummaryBtn) {
+    searchSummaryBtn.addEventListener('click', searchSummary);
+  }
+  if (summarySearchId) {
+    summarySearchId.addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') searchSummary();
+    });
+  }
 
   // History
   document.getElementById('statusFilter').addEventListener('change', loadHistoryData);
   document.getElementById('exportBtn').addEventListener('click', exportData);
 
-  // Values Input Preview
-  document.getElementById('values').addEventListener('input', updatePreview);
 }
 
 // ============================================
@@ -138,25 +129,46 @@ function switchToSection(sectionId) {
 // DASHBOARD
 // ============================================
 
-async function loadDashboardData() {
+async function loadDashboardData(options = {}) {
+  const { silent = false } = options;
   try {
-    showSpinner(true);
+    if (!silent) {
+      showSpinner(true);
+    }
     const data = await fetchFromAPI('/list');
-    appState.allData = data.data || [];
+    appState.allData = (data.data || []).sort(
+      (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+    );
 
-    updateStatistics();
-    updateActivityFeed();
-    renderCharts();
+    // Apply node filter if selected
+    const nodeFilter = document.getElementById('nodeFilter')?.value || '';
+    const filteredData = nodeFilter
+      ? appState.allData.filter((d) => d.node_id === nodeFilter)
+      : appState.allData;
+
+    try {
+      const alertsResponse = await fetchFromAPI('/alerts');
+      appState.alerts = Array.isArray(alertsResponse.data) ? alertsResponse.data : [];
+    } catch (alertError) {
+      appState.alerts = [];
+      console.warn('Failed to load alerts:', alertError);
+    }
+
+    updateStatistics(filteredData);
+    updateNodePanels(filteredData);
+    renderAlerts(appState.alerts);
+    updateActivityFeed(filteredData);
+    renderCharts(filteredData);
   } catch (error) {
     showToast('Error loading dashboard data', error.message, 'error');
   } finally {
-    showSpinner(false);
+    if (!silent) {
+      showSpinner(false);
+    }
   }
 }
 
-function updateStatistics() {
-  const data = appState.allData;
-
+function updateStatistics(data = appState.allData) {
   const stats = {
     total: data.length,
     pending: data.filter((d) => d.status === 'pending').length,
@@ -165,336 +177,486 @@ function updateStatistics() {
     failed: data.filter((d) => d.status === 'failed').length,
   };
 
-  document.getElementById('totalSubmissions').textContent = stats.total;
-  document.getElementById('processingCount').textContent =
-    stats.processing + stats.pending;
-  document.getElementById('completedCount').textContent = stats.done;
-  document.getElementById('failedCount').textContent = stats.failed;
+  const totalSubmissions = document.getElementById('totalSubmissions');
+  const processingCount = document.getElementById('processingCount');
+  const completedCount = document.getElementById('completedCount');
+  const failedCount = document.getElementById('failedCount');
+
+  if (totalSubmissions) {
+    totalSubmissions.textContent = stats.total;
+  }
+  if (processingCount) {
+    processingCount.textContent = stats.processing + stats.pending;
+  }
+  if (completedCount) {
+    completedCount.textContent = stats.done;
+  }
+  if (failedCount) {
+    failedCount.textContent = stats.failed;
+  }
 }
 
-function updateActivityFeed() {
-  const activityList = document.getElementById('activityList');
-  const data = appState.allData.slice(-10).reverse();
+function updateNodePanels(data = appState.allData) {
+  const nodeIds = ['NODE_TH', 'NODE_PA'];
+  const now = Date.now();
 
-  if (data.length === 0) {
-    activityList.innerHTML = '<div class="empty-state">No data available. Submit sensor data to get started.</div>';
+  nodeIds.forEach((nodeId) => {
+    const nodeData = data.filter((d) => d.node_id === nodeId);
+    const latestRecord = nodeData.length
+      ? nodeData.reduce((latest, current) => {
+          return new Date(current.timestamp).getTime() > new Date(latest.timestamp).getTime()
+            ? current
+            : latest;
+        })
+      : null;
+
+    const latestTimestamp = latestRecord ? new Date(latestRecord.timestamp).getTime() : 0;
+    const isFresh = latestRecord && !Number.isNaN(latestTimestamp) && now - latestTimestamp <= NODE_ONLINE_THRESHOLD_MS;
+    const statusEl = document.getElementById(`nodeStatus_${nodeId}`);
+    const metricsEl = document.getElementById(`metrics_${nodeId}`);
+    const metricKeys = nodeId === 'NODE_TH' ? ['temperature', 'humidity'] : ['pressure', 'ethanol'];
+
+    if (statusEl) {
+      if (!latestRecord) {
+        statusEl.textContent = 'Offline';
+        statusEl.className = 'node-status disconnected';
+      } else if (!isFresh || latestRecord.status !== 'done') {
+        statusEl.textContent = 'Disconnected';
+        statusEl.className = 'node-status disconnected';
+      } else {
+        statusEl.textContent = 'Online';
+        statusEl.className = 'node-status online';
+      }
+    }
+
+    if (metricsEl) {
+      const metricCards = Array.from(metricsEl.querySelectorAll('.metric-card'));
+      metricCards.forEach((card, index) => {
+        const valueEl = card.querySelector('.metric-value');
+        const trendEl = card.querySelector('.metric-trend');
+        const metricKey = metricKeys[index];
+        const value = latestRecord?.summary?.[metricKey]?.latest;
+
+        if (valueEl) {
+          valueEl.textContent = value !== undefined && value !== null ? formatMetricValue(value) : '--';
+        }
+        if (trendEl) {
+          trendEl.textContent = latestRecord && isFresh && latestRecord.status === 'done' ? 'Latest' : 'No data';
+        }
+      });
+    }
+  });
+}
+
+function renderAlerts(alerts = appState.alerts) {
+  const alertsList = document.getElementById('alertsList');
+  if (!alertsList) {
     return;
   }
 
-  activityList.innerHTML = data
+  const activeAlerts = [...(alerts || [])].filter((alert) => alert.status === 'active');
+  const normalizedAlerts = activeAlerts.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+  const nextAlertKeys = new Set(normalizedAlerts.map((alert) => alert.alert_id));
+  const previousAlertKeys = appState.activeAlertKeys;
+
+  normalizedAlerts.forEach((alert) => {
+    if (!previousAlertKeys.has(alert.alert_id)) {
+      showToast('Sensor Alert', `${alert.node_id} ${alert.metric} ${alert.message}`, 'warning');
+    }
+  });
+
+  appState.activeAlertKeys = nextAlertKeys;
+
+  if (normalizedAlerts.length === 0) {
+    alertsList.innerHTML = '<div class="empty-state compact">No active alerts.</div>';
+    return;
+  }
+
+  alertsList.innerHTML = normalizedAlerts
     .map(
-      (item) => `
-    <div class="activity-item">
-      <div class="activity-time">${formatTime(item.timestamp)}</div>
-      <div class="activity-text">
-        <strong>${item.sensor_id}</strong> • ${truncateId(item.data_id)}
+      (alert) => `
+      <div class="alert-item">
+        <div>
+          <div class="alert-title">${alert.node_id} · ${alert.metric}</div>
+          <div class="alert-message">${alert.message}</div>
+          <div class="alert-time">${formatDateTime(alert.timestamp)}</div>
+        </div>
+        <div class="alert-actions">
+          <div class="alert-value">${Number(alert.value).toFixed(2)}</div>
+          <button type="button" class="btn btn-small btn-secondary clear-alert-btn" data-alert-id="${alert.alert_id}">Clear</button>
+        </div>
       </div>
-      <span class="activity-status ${getStatusClass(item.status)}">${item.status}</span>
-    </div>
-  `
+    `
     )
+    .join('');
+
+  alertsList.querySelectorAll('.clear-alert-btn').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const alertId = btn.dataset.alertId;
+      if (!alertId) {
+        return;
+      }
+      await clearAlert(alertId);
+    });
+  });
+}
+
+async function clearAlert(alertId) {
+  try {
+    await fetchFromAPI(`/alerts/${encodeURIComponent(alertId)}`, { method: 'DELETE' });
+    appState.alerts = appState.alerts.filter((alert) => alert.alert_id !== alertId);
+    appState.activeAlertKeys.delete(alertId);
+    renderAlerts(appState.alerts);
+    showToast('Alert Cleared', `Alert ${truncateId(alertId)} cleared`, 'success');
+  } catch (error) {
+    showToast('Clear Alert Failed', error.message, 'error');
+  }
+}
+
+function updateActivityFeed(data = appState.allData) {
+  const activityList = document.getElementById('activityList');
+  if (!activityList) {
+    return;
+  }
+
+  const sorted = [...(data || [])].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+  const latestItems = sorted.slice(0, 8);
+
+  if (latestItems.length === 0) {
+    activityList.innerHTML = '<div class="empty-state">No data available. Waiting for sensor node uploads.</div>';
+    return;
+  }
+
+  activityList.innerHTML = latestItems
+    .map((item) => `
+      <div class="activity-item">
+        <div class="activity-time">${formatTime(item.timestamp)}</div>
+        <div class="activity-text">
+          <strong>${item.sensor_id || 'Unknown sensor'}</strong> (${item.node_id || 'Unknown node'}) • ${truncateId(item.data_id)}
+        </div>
+        <div class="activity-status ${getStatusClass(item.status)}">${item.status || 'unknown'}</div>
+      </div>
+    `)
     .join('');
 }
 
-function renderCharts() {
-  renderStatusChart();
-  renderSubmissionsChart();
-}
+function renderCharts(data = appState.allData) {
+  const metricConfigs = [
+    { chartKey: 'temperatureChart', label: 'Temperature (°C)', metricKey: 'temperature', color: '#22c55e' },
+    { chartKey: 'humidityChart', label: 'Humidity (%)', metricKey: 'humidity', color: '#38bdf8' },
+    { chartKey: 'pressureChart', label: 'Pressure (hPa)', metricKey: 'pressure', color: '#f97316' },
+    { chartKey: 'ethanolChart', label: 'Ethanol (ppm)', metricKey: 'ethanol', color: '#f43f5e' },
+  ];
 
-function renderStatusChart() {
-  const ctx = document.getElementById('statusChart')?.getContext('2d');
-  if (!ctx) return;
-
-  const data = appState.allData;
-  const statuses = {
-    pending: data.filter((d) => d.status === 'pending').length,
-    processing: data.filter((d) => d.status === 'processing').length,
-    done: data.filter((d) => d.status === 'done').length,
-    failed: data.filter((d) => d.status === 'failed').length,
-  };
-
-  if (appState.charts.statusChart) {
-    appState.charts.statusChart.destroy();
-  }
-
-  appState.charts.statusChart = new Chart(ctx, {
-    type: 'doughnut',
-    data: {
-      labels: ['Pending', 'Processing', 'Done', 'Failed'],
-      datasets: [
-        {
-          data: [
-            statuses.pending,
-            statuses.processing,
-            statuses.done,
-            statuses.failed,
-          ],
-          backgroundColor: [
-            '#f59e0b',
-            '#00d4ff',
-            '#10b981',
-            '#ef4444',
-          ],
-          borderColor: '#1e293b',
-          borderWidth: 2,
-        },
-      ],
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: true,
-      plugins: {
-        legend: {
-          labels: {
-            color: '#cbd5e1',
-            font: {
-              size: 12,
-              weight: '600',
-            },
-          },
-        },
-        tooltip: {
-          backgroundColor: 'rgba(15, 23, 42, 0.8)',
-          titleColor: '#00d4ff',
-          bodyColor: '#cbd5e1',
-          borderColor: '#00d4ff',
-          borderWidth: 1,
-        },
-      },
-    },
-  });
-}
-
-function renderSubmissionsChart() {
-  const ctx = document.getElementById('submissionsChart')?.getContext('2d');
-  if (!ctx) return;
-
-  // Group data by hour of submission
-  const hourlyData = Array(24).fill(0);
-  appState.allData.forEach((item) => {
-    const date = new Date(item.timestamp);
-    const hour = date.getHours();
-    hourlyData[hour]++;
-  });
-
-  if (appState.charts.submissionsChart) {
-    appState.charts.submissionsChart.destroy();
-  }
-
-  appState.charts.submissionsChart = new Chart(ctx, {
-    type: 'line',
-    data: {
-      labels: Array.from({ length: 24 }, (_, i) => `${i}:00`),
-      datasets: [
-        {
-          label: 'Submissions',
-          data: hourlyData,
-          borderColor: '#00d4ff',
-          backgroundColor: 'rgba(0, 212, 255, 0.1)',
-          fill: true,
-          tension: 0.4,
-          pointBackgroundColor: '#00d4ff',
-          pointBorderColor: '#1e293b',
-          pointBorderWidth: 2,
-          pointRadius: 4,
-          pointHoverRadius: 6,
-        },
-      ],
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: true,
-      plugins: {
-        legend: {
-          labels: {
-            color: '#cbd5e1',
-          },
-        },
-        tooltip: {
-          backgroundColor: 'rgba(15, 23, 42, 0.8)',
-          titleColor: '#00d4ff',
-          bodyColor: '#cbd5e1',
-          borderColor: '#00d4ff',
-          borderWidth: 1,
-        },
-      },
-      scales: {
-        y: {
-          beginAtZero: true,
-          ticks: {
-            color: '#cbd5e1',
-          },
-          grid: {
-            color: '#334155',
-          },
-        },
-        x: {
-          ticks: {
-            color: '#cbd5e1',
-          },
-          grid: {
-            color: '#334155',
-          },
-        },
-      },
-    },
-  });
-}
-
-// ============================================
-// SUBMIT DATA
-// ============================================
-
-async function submitSensorData() {
-  try {
-    const sensorId = document.getElementById('sensorId').value.trim();
-    const dataType = document.getElementById('dataType').value;
-
-    if (!sensorId) {
-      showToast('Validation Error', 'Sensor ID is required', 'error');
+  metricConfigs.forEach((config) => {
+    const chartData = buildMetricHistorySeries(data, config.metricKey);
+    const ctx = document.getElementById(config.chartKey);
+    if (!ctx) {
       return;
     }
 
-    showSpinner(true);
-
-    let payload;
-    if (dataType === 'manual') {
-      const valuesStr = document.getElementById('values').value.trim();
-      if (!valuesStr) {
-        throw new Error('Please enter sensor values');
-      }
-
-      const values = valuesStr
-        .split(',')
-        .map((v) => parseFloat(v.trim()))
-        .filter((v) => !isNaN(v));
-
-      if (values.length === 0) {
-        throw new Error('No valid numeric values found');
-      }
-
-      payload = { sensor_id: sensorId, values };
-    } else {
-      const file = document.getElementById('csvFile').files[0];
-      if (!file) {
-        throw new Error('Please select a file');
-      }
-
-      const content = await file.text();
-      let values = [];
-
-      if (file.name.endsWith('.json')) {
-        const json = JSON.parse(content);
-        values = Array.isArray(json)
-          ? json.map((v) => (typeof v === 'number' ? v : parseFloat(v)))
-          : json.values || [];
-      } else {
-        values = content
-          .split('\n')
-          .filter((line) => line.trim())
-          .map((line) => parseFloat(line.trim()))
-          .filter((v) => !isNaN(v));
-      }
-
-      if (values.length === 0) {
-        throw new Error('No valid numeric values found in file');
-      }
-
-      payload = { sensor_id: sensorId, values };
+    if (appState.charts[config.chartKey]) {
+      appState.charts[config.chartKey].destroy();
     }
 
-    const response = await fetchFromAPI('/data', {
-      method: 'POST',
-      body: JSON.stringify(payload),
+    appState.charts[config.chartKey] = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: chartData.labels,
+        datasets: [
+          {
+            label: config.label,
+            data: chartData.values,
+            borderColor: config.color,
+            backgroundColor: `${config.color}22`,
+            fill: true,
+            tension: 0.35,
+            pointBackgroundColor: config.color,
+            pointBorderColor: '#1e293b',
+            pointBorderWidth: 2,
+            pointRadius: 3,
+            pointHoverRadius: 5,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: true,
+        interaction: {
+          mode: 'index',
+          intersect: false,
+        },
+        plugins: {
+          zoom: {
+            pan: {
+              enabled: true,
+              mode: 'x',
+            },
+            zoom: {
+              wheel: {
+                enabled: true,
+              },
+              pinch: {
+                enabled: true,
+              },
+              mode: 'x',
+            },
+          },
+          legend: {
+            labels: {
+              color: '#cbd5e1',
+            },
+          },
+          tooltip: {
+            backgroundColor: 'rgba(15, 23, 42, 0.8)',
+            titleColor: '#00d4ff',
+            bodyColor: '#cbd5e1',
+            borderColor: '#00d4ff',
+            borderWidth: 1,
+          },
+        },
+        scales: {
+          y: {
+            beginAtZero: false,
+            ticks: {
+              color: '#cbd5e1',
+            },
+            grid: {
+              color: '#334155',
+            },
+          },
+          x: {
+            ticks: {
+              color: '#cbd5e1',
+            },
+            grid: {
+              color: '#334155',
+            },
+          },
+        },
+      },
     });
-    const result = response.data;
-
-    const resultContainer = document.getElementById('submitResult');
-    resultContainer.innerHTML = `
-      <div class="result-json result-success">
-        <strong>✓ Success!</strong><br/>
-        Data ID: <code>${result.data_id}</code><br/>
-        Status: <strong>${result.status}</strong>
-      </div>
-    `;
-    resultContainer.classList.add('active');
-
-    showToast('Success', 'Sensor data submitted for processing!', 'success');
-
-    // Reset form
-    document.getElementById('dataForm').reset();
-    document.getElementById('previewData').innerHTML =
-      '<div class="empty-state">Enter values to see preview</div>';
-
-    // Refresh data after a short delay
-    setTimeout(loadDashboardData, 1000);
-  } catch (error) {
-    const resultContainer = document.getElementById('submitResult');
-    resultContainer.innerHTML = `
-      <div class="result-json result-error">
-        <strong>✗ Error</strong><br/>
-        ${error.message}
-      </div>
-    `;
-    resultContainer.classList.add('active');
-    showToast('Submission Failed', error.message, 'error');
-  } finally {
-    showSpinner(false);
-  }
+  });
 }
 
-function updatePreview() {
-  const values = document.getElementById('values').value
-    .split(',')
-    .map((v) => parseFloat(v.trim()))
-    .filter((v) => !isNaN(v));
+function buildMetricHistorySeries(data, metricKey) {
+  const series = [...data]
+    .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+    .map((item) => {
+      const summary = item.summary?.[metricKey];
+      const value = summary?.latest;
+      if (value === undefined || value === null) {
+        return null;
+      }
 
-  const previewData = document.getElementById('previewData');
+      return {
+        timestamp: item.timestamp,
+        value: Number(value),
+      };
+    })
+    .filter(Boolean);
 
-  if (values.length === 0) {
-    previewData.innerHTML =
-      '<div class="empty-state">Enter values to see preview</div>';
-    return;
-  }
-
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const avg = (values.reduce((a, b) => a + b) / values.length).toFixed(2);
-
-  previewData.innerHTML = `
-    <div>
-      <strong>Values Entered:</strong> ${values.length}<br/>
-      ${values.map((v) => `<div class="preview-value">${v}</div>`).join('')}
-    </div>
-    <div style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border-color);">
-      <strong>Preview Statistics:</strong><br/>
-      Min: <span style="color: var(--primary-color);">${min}</span><br/>
-      Max: <span style="color: var(--primary-color);">${max}</span><br/>
-      Avg: <span style="color: var(--primary-color);">${avg}</span>
-    </div>
-  `;
-}
-
-function updateFileUploadLabel(fileName) {
-  const label = document.querySelector('.file-upload-label span');
-  label.textContent = fileName;
+  return {
+    labels: series.map((entry) => formatDateTime(entry.timestamp)),
+    values: series.map((entry) => entry.value),
+  };
 }
 
 // ============================================
 // ANALYTICS
 // ============================================
 
-async function loadAnalyticsData() {
+async function loadAnalyticsData(options = {}) {
+  const { silent = false } = options;
   try {
-    showSpinner(true);
+    if (!silent) {
+      showSpinner(true);
+    }
     const data = await fetchFromAPI('/list');
-    const completed = (data.data || []).filter((d) => d.status === 'done');
-    renderSummaries(completed);
+    const records = (data.data || []).sort(
+      (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+    );
+    renderAnalyticsInsights(records);
+
+    const summaryResult = document.getElementById('summaryResult');
+    if (summaryResult && !summaryResult.innerHTML.trim()) {
+      summaryResult.innerHTML =
+        '<div class="empty-state">Use Record Lookup to inspect one specific submission summary.</div>';
+    }
   } catch (error) {
     showToast('Error loading analytics', error.message, 'error');
   } finally {
-    showSpinner(false);
+    if (!silent) {
+      showSpinner(false);
+    }
   }
+}
+
+function renderAnalyticsInsights(records) {
+  renderAnalyticsKpis(records);
+  renderAnalyticsMetricRows(records);
+  renderAnalyticsNodeCards(records);
+}
+
+function renderAnalyticsKpis(records) {
+  const container = document.getElementById('analyticsKpiGrid');
+  if (!container) return;
+
+  const now = Date.now();
+  const in24h = records.filter((r) => new Date(r.timestamp).getTime() >= now - 24 * 60 * 60 * 1000);
+  const in60m = records.filter((r) => new Date(r.timestamp).getTime() >= now - 60 * 60 * 1000);
+  const done24h = in24h.filter((r) => r.status === 'done').length;
+  const failed24h = in24h.filter((r) => r.status === 'failed').length;
+  const completion24h = in24h.length > 0 ? (done24h / in24h.length) * 100 : 0;
+  const activeNodes60m = new Set(in60m.map((r) => r.node_id).filter(Boolean)).size;
+
+  const cards = [
+    { label: 'Samples (24h)', value: in24h.length, hint: 'Total submissions in last 24 hours' },
+    { label: 'Completion (24h)', value: `${completion24h.toFixed(1)}%`, hint: `${done24h} done / ${failed24h} failed` },
+    { label: 'Samples (60m)', value: in60m.length, hint: 'Recent submission throughput' },
+    { label: 'Active Nodes (60m)', value: activeNodes60m, hint: 'Nodes seen in last hour' },
+  ];
+
+  container.innerHTML = cards
+    .map(
+      (card) => `
+      <div class="analytics-kpi-card">
+        <div class="analytics-kpi-label">${card.label}</div>
+        <div class="analytics-kpi-value">${card.value}</div>
+        <div class="analytics-kpi-hint">${card.hint}</div>
+      </div>
+    `
+    )
+    .join('');
+}
+
+function renderAnalyticsMetricRows(records) {
+  const tbody = document.getElementById('analyticsMetricBody');
+  if (!tbody) return;
+
+  const metricConfig = [
+    { key: 'temperature', label: 'Temperature (°C)' },
+    { key: 'humidity', label: 'Humidity (%)' },
+    { key: 'pressure', label: 'Pressure (hPa)' },
+    { key: 'ethanol', label: 'Ethanol (ppm)' },
+  ];
+
+  const now = Date.now();
+  const doneRecords = records.filter((r) => r.status === 'done');
+
+  const rows = metricConfig
+    .map((metric) => {
+      const values24h = collectMetricValues(doneRecords, metric.key, now - 24 * 60 * 60 * 1000, now);
+      const values60m = collectMetricValues(doneRecords, metric.key, now - 60 * 60 * 1000, now);
+      const valuesPrev60m = collectMetricValues(doneRecords, metric.key, now - 2 * 60 * 60 * 1000, now - 60 * 60 * 1000);
+      const latest = collectMetricValues(doneRecords, metric.key, 0, now).at(-1);
+
+      const stats24h = summarizeValues(values24h);
+      const stats60m = summarizeValues(values60m);
+      const statsPrev60m = summarizeValues(valuesPrev60m);
+
+      const trendPct = stats60m.avg !== null && statsPrev60m.avg !== null && statsPrev60m.avg !== 0
+        ? ((stats60m.avg - statsPrev60m.avg) / statsPrev60m.avg) * 100
+        : null;
+
+      const trendText = trendPct === null ? 'N/A' : `${trendPct >= 0 ? '+' : ''}${trendPct.toFixed(1)}%`;
+      const trendClass = trendPct === null ? 'flat' : trendPct > 0 ? 'up' : trendPct < 0 ? 'down' : 'flat';
+
+      if (stats24h.count === 0 && stats60m.count === 0 && latest === null) {
+        return `
+          <tr>
+            <td>${metric.label}</td>
+            <td colspan="6" style="color: var(--text-tertiary);">No recent data</td>
+          </tr>
+        `;
+      }
+
+      return `
+        <tr>
+          <td>${metric.label}</td>
+          <td>${formatMetricValue(latest)}</td>
+          <td>${formatMetricValue(stats60m.avg)}</td>
+          <td>${formatMetricValue(stats24h.avg)}</td>
+          <td class="analytics-trend ${trendClass}">${trendText}</td>
+          <td>${formatMetricValue(stats24h.min)}</td>
+          <td>${formatMetricValue(stats24h.max)}</td>
+        </tr>
+      `;
+    })
+    .join('');
+
+  tbody.innerHTML = rows;
+}
+
+function renderAnalyticsNodeCards(records) {
+  const container = document.getElementById('analyticsNodesGrid');
+  if (!container) return;
+
+  const nodeIds = [...new Set(records.map((r) => r.node_id).filter(Boolean))].sort();
+  if (nodeIds.length === 0) {
+    container.innerHTML = '<div class="empty-state">No node analytics available yet.</div>';
+    return;
+  }
+
+  const now = Date.now();
+  container.innerHTML = nodeIds
+    .map((nodeId) => {
+      const nodeRecords = records.filter((r) => r.node_id === nodeId);
+      const latestRecord = nodeRecords.at(-1);
+      const samples60m = nodeRecords.filter((r) => new Date(r.timestamp).getTime() >= now - 60 * 60 * 1000).length;
+
+      const metricSummaries = ['temperature', 'humidity', 'pressure', 'ethanol']
+        .map((metricKey) => {
+          const values = collectMetricValues(
+            nodeRecords.filter((r) => r.status === 'done'),
+            metricKey,
+            now - 60 * 60 * 1000,
+            now
+          );
+          const stats = summarizeValues(values);
+          if (stats.count === 0) return null;
+          return `<span>${metricKey}: ${formatMetricValue(stats.avg)} avg</span>`;
+        })
+        .filter(Boolean)
+        .join('');
+
+      return `
+        <div class="analytics-node-card">
+          <div class="analytics-node-title">${nodeId}</div>
+          <div class="analytics-node-meta">Last seen: ${latestRecord ? formatTime(latestRecord.timestamp) : 'Never'}</div>
+          <div class="analytics-node-meta">Samples (60m): ${samples60m}</div>
+          <div class="analytics-node-metrics">${metricSummaries || '<span>No metric averages in last hour</span>'}</div>
+        </div>
+      `;
+    })
+    .join('');
+}
+
+function collectMetricValues(records, metricKey, fromMs, toMs) {
+  return records
+    .filter((record) => {
+      const t = new Date(record.timestamp).getTime();
+      return !Number.isNaN(t) && t >= fromMs && t <= toMs;
+    })
+    .map((record) => record.summary?.[metricKey]?.latest)
+    .filter((value) => value !== undefined && value !== null)
+    .map((value) => Number(value))
+    .filter((value) => !Number.isNaN(value));
+}
+
+function summarizeValues(values) {
+  if (!values || values.length === 0) {
+    return { min: null, max: null, avg: null, count: 0 };
+  }
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const avg = values.reduce((acc, n) => acc + n, 0) / values.length;
+  return { min, max, avg, count: values.length };
+}
+
+function formatMetricValue(value) {
+  return value === null || value === undefined ? 'N/A' : Number(value).toFixed(2);
 }
 
 async function searchSummary() {
@@ -538,22 +700,7 @@ function renderSummaries(summaries) {
         ${
           item.summary
             ? `
-          <div class="stat-item">
-            <div class="stat-label">Min Value</div>
-            <div class="stat-value-lg">${item.summary.min?.toFixed(2) || 'N/A'}</div>
-          </div>
-          <div class="stat-item">
-            <div class="stat-label">Max Value</div>
-            <div class="stat-value-lg">${item.summary.max?.toFixed(2) || 'N/A'}</div>
-          </div>
-          <div class="stat-item">
-            <div class="stat-label">Average</div>
-            <div class="stat-value-lg">${item.summary.avg?.toFixed(2) || 'N/A'}</div>
-          </div>
-          <div class="stat-item">
-            <div class="stat-label">Count</div>
-            <div class="stat-value-lg">${item.summary.count || 'N/A'}</div>
-          </div>
+          ${renderSummaryStats(item.summary)}
         `
             : '<div class="empty-state">Summary not yet available</div>'
         }
@@ -571,9 +718,12 @@ function renderSummaries(summaries) {
 // HISTORY
 // ============================================
 
-async function loadHistoryData() {
+async function loadHistoryData(options = {}) {
+  const { silent = false } = options;
   try {
-    showSpinner(true);
+    if (!silent) {
+      showSpinner(true);
+    }
     const data = await fetchFromAPI('/list');
     let records = data.data || [];
 
@@ -593,7 +743,9 @@ async function loadHistoryData() {
   } catch (error) {
     showToast('Error loading history', error.message, 'error');
   } finally {
-    showSpinner(false);
+    if (!silent) {
+      showSpinner(false);
+    }
   }
 }
 
@@ -619,9 +771,7 @@ function renderHistoryTable(records) {
           record.summary
             ? `
           <div style="font-size: 0.85rem;">
-            Min: ${record.summary.min?.toFixed(2)} | 
-            Max: ${record.summary.max?.toFixed(2)} | 
-            Avg: ${record.summary.avg?.toFixed(2)}
+            ${renderHistorySummary(record.summary)}
           </div>
         `
             : '<span style="color: var(--text-tertiary);">Pending</span>'
@@ -650,16 +800,14 @@ function exportData() {
   try {
     const records = appState.allData;
     const csv = [
-      ['Data ID', 'Sensor ID', 'Status', 'Timestamp', 'Min', 'Max', 'Avg', 'Count'],
+      ['Data ID', 'Sensor ID', 'Node ID', 'Status', 'Timestamp', 'Summary JSON'],
       ...records.map((r) => [
         r.data_id,
         r.sensor_id,
+        r.node_id || '',
         r.status,
         r.timestamp,
-        r.summary?.min || '',
-        r.summary?.max || '',
-        r.summary?.avg || '',
-        r.summary?.count || '',
+        r.summary ? JSON.stringify(r.summary) : '',
       ]),
     ]
       .map((row) => row.map((cell) => `"${cell}"`).join(','))
@@ -681,6 +829,149 @@ function exportData() {
   }
 }
 
+function renderSummaryStats(summary) {
+  // Metrics-based structure can be compact ({latest,count}) or aggregate ({latest,min,max,avg,count})
+  const metricEntries = Object.entries(summary || {}).filter(([, value]) => {
+    return value && typeof value === 'object' && value.latest !== undefined;
+  });
+
+  if (metricEntries.length > 0) {
+    return metricEntries
+      .map(([metricName, metric]) => {
+        const hasAggregateStats =
+          metric.min !== undefined && metric.max !== undefined && metric.avg !== undefined;
+
+        const detailLine = hasAggregateStats
+          ? `Min:${Number(metric.min).toFixed(2)} Max:${Number(metric.max).toFixed(2)} Avg:${Number(metric.avg).toFixed(2)} Count:${metric.count ?? 1}`
+          : `Count:${metric.count ?? 1}`;
+
+        return `
+        <div class="stat-item">
+          <div class="stat-label">${metricName.toUpperCase()}</div>
+          <div class="stat-value-lg">${Number(metric.latest).toFixed(2)}</div>
+          <div class="stat-value-lg" style="font-size:0.9rem; margin-top:0.25rem;">
+            ${detailLine}
+          </div>
+        </div>
+      `;
+      })
+      .join('');
+  }
+
+  // Legacy flat structure: {min,max,avg,count}
+  return `
+    <div class="stat-item">
+      <div class="stat-label">Min Value</div>
+      <div class="stat-value-lg">${summary.min !== undefined ? Number(summary.min).toFixed(2) : 'N/A'}</div>
+    </div>
+    <div class="stat-item">
+      <div class="stat-label">Max Value</div>
+      <div class="stat-value-lg">${summary.max !== undefined ? Number(summary.max).toFixed(2) : 'N/A'}</div>
+    </div>
+    <div class="stat-item">
+      <div class="stat-label">Average</div>
+      <div class="stat-value-lg">${summary.avg !== undefined ? Number(summary.avg).toFixed(2) : 'N/A'}</div>
+    </div>
+    <div class="stat-item">
+      <div class="stat-label">Count</div>
+      <div class="stat-value-lg">${summary.count ?? 'N/A'}</div>
+    </div>
+  `;
+}
+
+function renderHistorySummary(summary) {
+  const metricEntries = Object.entries(summary || {}).filter(([, value]) => {
+    return value && typeof value === 'object' && value.latest !== undefined;
+  });
+  if (metricEntries.length > 0) {
+    return metricEntries
+      .map(([metricName, metric]) => {
+        const hasAggregateStats =
+          metric.min !== undefined && metric.max !== undefined && metric.avg !== undefined;
+
+        if (hasAggregateStats) {
+          return `${metricName}: Latest=${Number(metric.latest).toFixed(2)}, Avg=${Number(metric.avg).toFixed(2)}`;
+        }
+
+        return `${metricName}: Latest=${Number(metric.latest).toFixed(2)}, Count=${metric.count ?? 1}`;
+      })
+      .join(' | ');
+  }
+
+  return `Min: ${summary.min !== undefined ? Number(summary.min).toFixed(2) : 'N/A'} | Max: ${summary.max !== undefined ? Number(summary.max).toFixed(2) : 'N/A'} | Avg: ${summary.avg !== undefined ? Number(summary.avg).toFixed(2) : 'N/A'}`;
+}
+
+function applyHistoryRange() {
+  const fromValue = document.getElementById('historyFrom')?.value || '';
+  const toValue = document.getElementById('historyTo')?.value || '';
+
+  if (fromValue && toValue && new Date(fromValue).getTime() > new Date(toValue).getTime()) {
+    showToast('Validation Error', 'The From date/time must be earlier than the To date/time.', 'error');
+    return;
+  }
+
+  appState.historyRange = {
+    from: fromValue,
+    to: toValue,
+  };
+
+  renderCharts(getDashboardNodeFilteredData());
+}
+
+function clearHistoryRange() {
+  const fromInput = document.getElementById('historyFrom');
+  const toInput = document.getElementById('historyTo');
+
+  if (fromInput) fromInput.value = '';
+  if (toInput) toInput.value = '';
+
+  appState.historyRange = {
+    from: '',
+    to: '',
+  };
+
+  renderCharts(getDashboardNodeFilteredData());
+}
+
+function filterRecordsByHistoryRange(records) {
+  const { from, to } = appState.historyRange;
+
+  if (!from && !to) {
+    return records;
+  }
+
+  const fromTime = from ? new Date(from).getTime() : null;
+  const toTime = to ? new Date(to).getTime() : null;
+
+  return records.filter((record) => {
+    const timestamp = new Date(record.timestamp).getTime();
+    if (Number.isNaN(timestamp)) {
+      return false;
+    }
+
+    if (fromTime !== null && timestamp < fromTime) {
+      return false;
+    }
+
+    if (toTime !== null && timestamp > toTime) {
+      return false;
+    }
+
+    return true;
+  });
+}
+
+function getDashboardNodeFilteredData() {
+  const nodeFilter = document.getElementById('nodeFilter')?.value || '';
+  let records = appState.allData;
+
+  if (nodeFilter) {
+    records = records.filter((record) => record.node_id === nodeFilter);
+  }
+
+  return records;
+}
+
 // ============================================
 // API UTILITIES
 // ============================================
@@ -697,18 +988,28 @@ async function fetchFromAPI(endpoint, options = {}) {
     headers,
   });
 
-  const data = await response.json();
+  const rawBody = await response.text();
+  let data;
+  try {
+    data = rawBody ? JSON.parse(rawBody) : null;
+  } catch {
+    const snippet = rawBody ? rawBody.slice(0, 140).replace(/\s+/g, ' ').trim() : 'empty response body';
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${snippet}`);
+    }
+    throw new Error(`Invalid JSON response: ${snippet}`);
+  }
 
   if (!response.ok) {
-    throw new Error(data.error || `HTTP Error: ${response.status}`);
+    throw new Error(data?.error || `HTTP Error: ${response.status}`);
   }
 
   // Normalize response format
-  if (!data.hasOwnProperty('data')) {
-    return { data };
+  if (data && typeof data === 'object' && !Array.isArray(data) && Object.prototype.hasOwnProperty.call(data, 'data')) {
+    return data;
   }
 
-  return data;
+  return { data };
 }
 
 // ============================================
@@ -720,6 +1021,20 @@ function setupAutoRefresh() {
     appState.refreshInterval = setInterval(refreshCurrentSection, AUTO_REFRESH_INTERVAL);
   }
 }
+
+function setupStatusRefresh() {
+  if (appState.statusInterval) {
+    clearInterval(appState.statusInterval);
+  }
+
+  appState.statusInterval = setInterval(() => {
+    if (appState.currentSection === 'dashboard') {
+      updateNodePanels(appState.allData);
+      renderAlerts(appState.alerts);
+    }
+  }, STATUS_REFRESH_INTERVAL);
+}
+
 
 function toggleAutoRefresh(e) {
   appState.autoRefresh = e.target.checked;
@@ -739,13 +1054,13 @@ function toggleAutoRefresh(e) {
 function refreshCurrentSection() {
   switch (appState.currentSection) {
     case 'dashboard':
-      loadDashboardData();
+      loadDashboardData({ silent: true });
       break;
     case 'analytics':
-      loadAnalyticsData();
+      loadAnalyticsData({ silent: true });
       break;
     case 'history':
-      loadHistoryData();
+      loadHistoryData({ silent: true });
       break;
   }
 }

@@ -24,8 +24,14 @@ def _declare_queue(channel) -> None:
 def publish_job(job_payload: dict, retry_attempts: int = 3, retry_backoff_seconds: int = 2) -> None:
     if "data_id" not in job_payload:
         raise ValueError("Job payload must include data_id")
-    if "values" not in job_payload:
-        raise ValueError("Job payload must include values")
+
+    has_legacy_values = "values" in job_payload
+    has_node_metrics = (
+        "node_id" in job_payload
+        and "metrics" in job_payload
+    )
+    if not has_legacy_values and not has_node_metrics:
+        raise ValueError("Job payload must include values or node metrics")
 
     body = json.dumps(job_payload)
     last_error = None
